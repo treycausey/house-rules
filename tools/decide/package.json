@@ -1,0 +1,16 @@
+{
+  "name": "decide",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "decide": "bin/decide.ts" },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.0",
+    "vitest": "^3.0.0"
+  }
+}
