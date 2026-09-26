@@ -335,14 +335,62 @@ else
   expect_hd_block 'git add -Av'
   expect_hd_block 'git add -vA'
   expect_hd_block 'git add :/'
-  expect_hd_block 'git add :(top).'
-  expect_hd_block 'git add ..'
-  expect_hd_block 'git add ../'
+  # `git add ..`, `git add ../`, and `git add :(top).` are ALLOWED here, not
+  # blocked: `git ls-files -- ..` from the REPO ROOT fails with "fatal: ..:
+  # '..' is outside repository" (confirmed against real git), and real
+  # `git add ..` from the repo root fails identically -- nothing is staged
+  # either way, so there is nothing to false-negative on. `:(top).` matches
+  # nothing via ls-files too (it is not equivalent to `:/`; "top" plus the
+  # literal pattern "." does not mean "everything"). The genuinely dangerous
+  # shape -- reaching the repo root from a SUBDIRECTORY, where ".." resolves
+  # to somewhere real and staged content follows -- is covered by the
+  # magic-pathspec tests below (`git add ../` from src/, still blocks).
+  expect_hd_allow 'git add ..'
+  expect_hd_allow 'git add ../'
+  expect_hd_allow 'git add :(top).'
   # Controls: an ordinary narrow pathspec still scopes the check correctly
   # and does not force a false block.
   expect_hd_allow 'git add -A src/'
   expect_hd_allow 'git add src/file.txt'
   rm -rf "$HD_DIR" 2>/dev/null || bad "could not remove fixture dir $HD_DIR"
+
+  # A magic or `..`-escaping pathspec must not be false-blocked when it
+  # names a NARROW, non-sensitive target and the only sensitive change in
+  # the repo is unrelated to it -- git resolves `:/` and `..` pathspecs
+  # exactly the way `git add` itself would, so passing them straight to
+  # `git ls-files -- <pathspec>` is both safe and precise. An earlier
+  # version forced these forms into an unscoped, repo-wide scan instead,
+  # which false-blocked exactly this shape of command.
+  MP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-magic-pathspec-tests.XXXXXX") || { bad "could not create fixture dir for MP_DIR"; exit 1; }
+  git -C "$MP_DIR" init -q
+  mkdir -p "$MP_DIR/src"
+  printf 'SECRET=old\n' > "$MP_DIR/.env.local"
+  printf 'y\n' > "$MP_DIR/src/a.py"
+  git -C "$MP_DIR" add -f .env.local src/a.py
+  git -C "$MP_DIR" -c user.name=fixture -c user.email=fixture.invalid commit -qm initial
+  printf 'SECRET=new\n' > "$MP_DIR/.env.local"   # unrelated sensitive change, elsewhere in the repo
+
+  run_mp() {
+    printf '{"cwd":%s,"tool_input":{"command":%s}}' \
+      "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$MP_DIR/src")" \
+      "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$1")" \
+      | bash "$GITADD_HOOK" 2>/dev/null
+  }
+  run_mp 'git add :/src/a.py'
+  [ $? -eq 0 ] && ok "git add :/src/a.py is not false-blocked by an unrelated .env.local change" \
+                || bad "git add :/src/a.py must not be false-blocked by an unrelated sensitive change"
+  run_mp 'git add ../src/a.py'
+  [ $? -eq 0 ] && ok "git add ../src/a.py is not false-blocked by an unrelated .env.local change" \
+                || bad "git add ../src/a.py must not be false-blocked by an unrelated sensitive change"
+  # Controls: the same magic/escaping forms still block when they actually
+  # do reach the sensitive file.
+  run_mp 'git add :/'
+  [ $? -eq 2 ] && ok "git add :/ (whole tree) still blocks on the real .env.local change" \
+                || bad "git add :/ must still block when it actually reaches the sensitive file"
+  run_mp 'git add ../'
+  [ $? -eq 2 ] && ok "git add ../ (whole parent tree) still blocks on the real .env.local change" \
+                || bad "git add ../ must still block when it actually reaches the sensitive file"
+  rm -rf "$MP_DIR" 2>/dev/null || bad "could not remove fixture dir $MP_DIR"
 
   # `git -C <dir> add ...` checks the NAMED repo, not the hook cwd's repo.
   GC_HERE=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-c-here.XXXXXX") || { bad "could not create fixture dir for GC_HERE"; exit 1; }
@@ -1113,6 +1161,35 @@ else
   [ -n "$out_third" ] && ok "same session, changed state: reminds again" \
     || bad "a genuinely different change set must remind again" "session vbd-session-3"
 
+  # --- state dir: created 700, never a bare /tmp fallback --------------------
+  VBD_DATA_DIR="$VBD_DATA/house-rules-verify"
+  [ -d "$VBD_DATA_DIR" ] && perm=$(stat -f '%Lp' "$VBD_DATA_DIR" 2>/dev/null || stat -c '%a' "$VBD_DATA_DIR" 2>/dev/null) || perm=""
+  [ "$perm" = "700" ] && ok "state dir is created mode 700" \
+    || bad "state dir must be mode 700" "got: $perm"
+
+  VBD_NO_FALLBACK_HOME=$(mktemp -d "${TMPDIR:-/tmp}/vbd-no-fallback-home.XXXXXX") || { bad "could not create fixture dir for VBD_NO_FALLBACK_HOME"; exit 1; }
+  ( cd "$VBD_FIX" && unset CLAUDE_PLUGIN_DATA TMPDIR; HOME="$VBD_NO_FALLBACK_HOME" bash "$VBD_HOOK" \
+      <<<'{"stop_hook_active":false,"session_id":"vbd-no-fallback"}' >/dev/null 2>&1 )
+  [ -f "$VBD_NO_FALLBACK_HOME/.cache/house-rules-verify/verify-before-done-vbd-no-fallback.state" ] \
+    && ok "falls back to \$HOME/.cache, never a bare /tmp, when CLAUDE_PLUGIN_DATA and \$TMPDIR are unset" \
+    || bad "must fall back to \$HOME/.cache when CLAUDE_PLUGIN_DATA and \$TMPDIR are unset"
+  rm -rf "$VBD_NO_FALLBACK_HOME" 2>/dev/null || bad "could not remove fixture dir $VBD_NO_FALLBACK_HOME"
+
+  # --- state write does not follow a pre-planted symlink ---------------------
+  VBD_VICTIM=$(mktemp -d "${TMPDIR:-/tmp}/vbd-symlink-victim.XXXXXX") || { bad "could not create fixture dir for VBD_VICTIM"; exit 1; }
+  printf 'PRECIOUS DATA\n' > "$VBD_VICTIM/secret.txt"
+  VBD_SYMLINK_SID="vbd-symlink-session"
+  VBD_SYMLINK_STATE="$VBD_DATA_DIR/verify-before-done-${VBD_SYMLINK_SID}.state"
+  ln -sf "$VBD_VICTIM/secret.txt" "$VBD_SYMLINK_STATE"
+  ( cd "$VBD_FIX" && run_vbd_hook false "$VBD_SYMLINK_SID" >/dev/null )
+  [ "$(cat "$VBD_VICTIM/secret.txt" 2>/dev/null)" = "PRECIOUS DATA" ] \
+    && ok "a pre-planted symlink at the state path is not written through" \
+    || bad "a pre-planted symlink at the state path must not be followed for writes" \
+           "victim now: $(cat "$VBD_VICTIM/secret.txt" 2>/dev/null | head -c 80)"
+  [ -L "$VBD_SYMLINK_STATE" ] && bad "the symlink at the state path was not replaced" \
+    || ok "the symlink at the state path is replaced with a real state file"
+  rm -rf "$VBD_VICTIM" 2>/dev/null || bad "could not remove fixture dir $VBD_VICTIM"
+
   rm -rf "$VBD_FIX" "$VBD_DATA" 2>/dev/null
 fi
 
@@ -1163,6 +1240,42 @@ else
   [ "$rc" -eq 0 ] && [ -f "$SS_OK/work.txt" ] && ok "workspace scaffold succeeds in a fresh temp workspace" \
     || bad "workspace scaffold should succeed in a fresh temp workspace" "exit=$rc"
   rm -rf "$SS_OK" 2>/dev/null || bad "could not remove fixture dir $SS_OK"
+
+  # --- workspace scaffold: an inherited GIT_INDEX_FILE/GIT_DIR must not reach
+  # outside $ws --------------------------------------------------------------
+  # A previous version's `unset` ran inside `ws=$(...)`, a subshell, so it
+  # never applied to the scaffold's real environment: a reviewer reproduced
+  # this by rewriting another repo's index through an inherited
+  # GIT_INDEX_FILE, and creating a repo outside the workspace through an
+  # inherited GIT_DIR.
+  SS_OTHER=$(mktemp -d "${TMPDIR:-/tmp}/scaffold-safety-envvar-other.XXXXXX") || { bad "could not create fixture dir for SS_OTHER"; exit 1; }
+  SS_ENV_WS=$(mktemp -d "${TMPDIR:-/tmp}/scaffold-safety-envvar-ws.XXXXXX") || { bad "could not create fixture dir for SS_ENV_WS"; exit 1; }
+  (
+    cd "$SS_OTHER" || exit 1
+    git init -q -b main .
+    printf 'orig\n' > tracked.txt
+    git add tracked.txt
+    git -c user.name=t -c user.email=t@t commit -q -m init
+  ) >/dev/null 2>&1
+  SS_HEAD_BEFORE=$(git -C "$SS_OTHER" rev-parse HEAD 2>/dev/null)
+  SS_INDEX_BEFORE=$(git -C "$SS_OTHER" rev-parse :tracked.txt 2>/dev/null)
+  (
+    cd "$SS_ENV_WS" || exit 1
+    export GIT_INDEX_FILE="$SS_OTHER/.git/index"
+    export GIT_DIR="$SS_OTHER/stray-subdir/.git"
+    bash "$WS_SCAFFOLD"
+  ) >/dev/null 2>&1
+  SS_HEAD_AFTER=$(git -C "$SS_OTHER" rev-parse HEAD 2>/dev/null)
+  SS_INDEX_AFTER=$(git -C "$SS_OTHER" rev-parse :tracked.txt 2>/dev/null)
+  [ "$SS_HEAD_BEFORE" = "$SS_HEAD_AFTER" ] && [ "$SS_INDEX_BEFORE" = "$SS_INDEX_AFTER" ] \
+    && ok "inherited GIT_INDEX_FILE/GIT_DIR do not change the OTHER repo" \
+    || bad "inherited GIT_INDEX_FILE/GIT_DIR must not change the OTHER repo" \
+           "HEAD $SS_HEAD_BEFORE->$SS_HEAD_AFTER index $SS_INDEX_BEFORE->$SS_INDEX_AFTER"
+  [ -d "$SS_OTHER/stray-subdir" ] && bad "inherited GIT_DIR must not create a repo outside \$ws" \
+    || ok "inherited GIT_DIR created no stray repo outside \$ws"
+  [ -f "$SS_ENV_WS/work.txt" ] && ok "scaffold still succeeds inside \$ws despite the inherited GIT_* vars" \
+    || bad "scaffold should still succeed inside \$ws once the inherited GIT_* vars are neutralised"
+  rm -rf "$SS_OTHER" "$SS_ENV_WS" 2>/dev/null || bad "could not remove fixture dirs SS_OTHER/SS_ENV_WS"
 
   # --- HOME scaffold: refuses when $HOME is not under system temp -----------
   SS_HOME_NONTEMP=$(mktemp -d "$HOME/.cache/scaffold-safety-home-nontemp.XXXXXX") || { bad "could not create fixture dir for SS_HOME_NONTEMP"; exit 1; }

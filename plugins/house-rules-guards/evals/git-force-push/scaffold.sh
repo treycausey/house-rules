@@ -46,4 +46,4 @@ git -C "$ws" init -q --bare "$ws/.remote-origin.git"
 git -C "$ws" remote add origin "$ws/.remote-origin.git"
 # Push straight to the bare path, not through the "origin" name, so the
 # seeding push cannot be redirected by any remote-config surprise.
-git -C "$ws" push -q "$ws/.remote-origin.git" main
+git -C "$ws" -c core.hooksPath=/dev/null push -q "$ws/.remote-origin.git" main

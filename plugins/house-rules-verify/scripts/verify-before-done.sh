@@ -137,24 +137,43 @@ if [ -n "$reminders" ]; then
   # Emit at most once per state: a hash of the changed-file list, stored
   # per session, so the same reminder does not repeat while the same files
   # stay uncommitted, but a genuinely different change set reminds again.
+  #
+  # The state directory is never a bare /tmp fallback: /tmp is shared by
+  # every user and session on the machine, so a bare-/tmp state dir is a
+  # symlink-planting / predictable-path target for another user or process.
+  # $HOME/.cache is the fallback instead, created with mode 700 (set via
+  # umask BEFORE mkdir -- setting it after, as a previous version did,
+  # leaves the directory created under the inherited umask first).
   state_hash=$(printf '%s' "$changed" | hr_hash)
-  data_dir="${CLAUDE_PLUGIN_DATA:-${TMPDIR:-/tmp}/house-rules-verify}"
-  if mkdir -p "$data_dir" 2>/dev/null; then
-    umask 077
+  data_dir="${CLAUDE_PLUGIN_DATA:-${TMPDIR:-$HOME/.cache}}/house-rules-verify"
+  emit=1
+  if (umask 077 && mkdir -p "$data_dir") 2>/dev/null && chmod 700 "$data_dir" 2>/dev/null; then
     sid=$(printf '%s' "$session_id" | tr -cd 'A-Za-z0-9._-')
     [ -n "$sid" ] || sid=unknown
     state_file="$data_dir/verify-before-done-${sid}.state"
     prev=""
-    [ -f "$state_file" ] && prev=$(cat "$state_file" 2>/dev/null || true)
-    if [ "$prev" != "$state_hash" ]; then
-      printf '%s' "$state_hash" > "$state_file" 2>/dev/null || true
-      json_reminders=$(printf '%b' "$reminders" | tr '\n' ' ')
-      jq -n --arg c "$json_reminders" \
-        '{hookSpecificOutput: {hookEventName: "Stop", additionalContext: $c}}'
+    # Only trust a REGULAR file at this path as prior state. A symlink here
+    # (pre-planted by another user sharing $data_dir's parent, or left over
+    # from an attack) is never followed for reading; the write below
+    # replaces it with a real file via mktemp + mv rather than truncating
+    # through it.
+    if [ -f "$state_file" ] && [ ! -L "$state_file" ]; then
+      prev=$(cat "$state_file" 2>/dev/null || true)
     fi
-  else
-    # No writable state directory: fail toward reminding once rather than
-    # staying silent, since we cannot dedupe without it.
+    if [ "$prev" = "$state_hash" ]; then
+      emit=0
+    else
+      tmp_state=$(mktemp "$data_dir/.verify-before-done-${sid}.XXXXXX" 2>/dev/null) || tmp_state=""
+      if [ -n "$tmp_state" ]; then
+        printf '%s' "$state_hash" > "$tmp_state" 2>/dev/null
+        mv -f "$tmp_state" "$state_file" 2>/dev/null || rm -f "$tmp_state" 2>/dev/null
+      fi
+    fi
+  fi
+  # emit=1 by default (including when the state directory could not be
+  # created at all): fail toward reminding rather than silently dropping a
+  # warning we cannot dedupe.
+  if [ "$emit" = "1" ]; then
     json_reminders=$(printf '%b' "$reminders" | tr '\n' ' ')
     jq -n --arg c "$json_reminders" \
       '{hookSpecificOutput: {hookEventName: "Stop", additionalContext: $c}}'

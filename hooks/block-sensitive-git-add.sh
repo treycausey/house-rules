@@ -304,13 +304,19 @@ for segment in split_segments(cmd):
     # A pathspec operand (including the bare "." that scopes a broad add to
     # the current directory) narrows a broad add's real footprint; a bare
     # `-A` / `-u` with no operand does not, and is repo-wide. A magic
-    # (`:/`, `:(...)`) or `..`-escaping pathspec is not trustworthy as a
-    # narrowing scope either way, so it forces the same repo-wide scan as
-    # no pathspec at all rather than being handed to git literally.
-    if any(is_broad_pathspec(p) for p in paths):
-        pathspecs = []
-    else:
-        pathspecs = paths
+    # (`:/`, `:(...)`) or `..`-escaping pathspec is handed to git literally
+    # here too: `git ls-files -- <pathspec>` from the same repo_cwd resolves
+    # `:/`, `:(top)`, and `..` exactly the way `git add` itself would, so
+    # trusting it is both safe and precise. An earlier version forced an
+    # unscoped, repo-wide scan for these forms instead of scoping to them --
+    # safe, but wrong in the other direction: `git add ../a.py` (or
+    # `git add :/a.py`) was then false-blocked by an unrelated sensitive
+    # file changed anywhere else in the repo, even though that add only
+    # touches one named, non-sensitive file. `is_broad_pathspec` still
+    # marks the command `broad` in git_add_paths (below), which is what
+    # makes a magic/escaping pathspec trigger this scan at all -- a plain
+    # `git add ../a.py` with no `-A`/`-u` would otherwise skip it entirely.
+    pathspecs = paths
 
     # Broad add forms can stage a changed, already-tracked .env file even when
     # the command does not name it. Inspect the worktree before allowing them.

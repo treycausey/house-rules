@@ -13,12 +13,41 @@
 #
 # Tested by hooks/tests/run-tests.sh.
 
+# GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY /
+# GIT_COMMON_DIR / GIT_ALTERNATE_OBJECT_DIRECTORIES can each redirect where
+# git actually reads or writes, independent of `-C <dir>` or cwd -- if this
+# scaffold process inherited any of them from its caller, "git -C $ws ..."
+# would operate on, or write into, a repository outside $ws entirely.
+# GIT_CEILING_DIRECTORIES only limits upward repo discovery, not a write
+# target, so it is left alone.
+#
+# This unset MUST run at file scope, from a plain `. fixtures/scaffold-safety.sh`
+# in the scaffold script's own shell. A previous version put it inside a
+# function whose result the caller captured with `ws=$(that_function)` --
+# command substitution forks a subshell, so the unset landed in that
+# subshell and vanished the instant it exited, leaving every GIT_* variable
+# untouched in the scaffold's real environment. A reviewer reproduced this
+# by rewriting a repo's index through an inherited GIT_INDEX_FILE and
+# creating a repo outside the workspace through an inherited GIT_DIR.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR GIT_ALTERNATE_OBJECT_DIRECTORIES
+for _hr_git_var in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR GIT_ALTERNATE_OBJECT_DIRECTORIES; do
+  if eval "[ -n \"\${$_hr_git_var:-}\" ]"; then
+    printf 'refusing: %s is still set after unset (readonly in this shell?)\n' "$_hr_git_var" >&2
+    exit 1
+  fi
+done
+unset _hr_git_var
+
 # Every resolved system-temp root, both spellings (the literal path and its
 # realpath -- /tmp is a symlink to /private/tmp on macOS), one per line, de-duplicated.
+# $TMPDIR is trusted only when its OWN realpath resolves under one of the
+# known OS-volatile temp locations (/tmp, /private/tmp, /var/folders,
+# /private/var/folders on macOS) -- otherwise a $TMPDIR pointing at an
+# arbitrary directory (a misconfigured environment, or a hostile one) would
+# make every "is this under temp" check pass for wherever it points.
 hr_eval_temp_roots() {
   local root resolved seen=" "
-  for root in /tmp /var/tmp "${TMPDIR:-}"; do
-    [ -n "$root" ] || continue
+  for root in /tmp /var/tmp; do
     root=${root%/}
     [ -n "$root" ] || continue
     case "$seen" in *" $root "*) ;; *) seen="$seen$root "; printf '%s\n' "$root" ;; esac
@@ -29,6 +58,16 @@ hr_eval_temp_roots() {
       fi
     fi
   done
+  if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+    resolved=$(cd -P "$TMPDIR" 2>/dev/null && pwd -P) || resolved=""
+    if [ -n "$resolved" ]; then
+      case "$resolved" in
+        /tmp|/tmp/*|/private/tmp|/private/tmp/*|/var/folders|/var/folders/*|/private/var/folders|/private/var/folders/*)
+          case "$seen" in *" $resolved "*) ;; *) seen="$seen$resolved "; printf '%s\n' "$resolved" ;; esac
+          ;;
+      esac
+    fi
+  fi
 }
 
 hr_eval_is_under_temp() {
@@ -84,14 +123,24 @@ hr_eval_refuse() {
 # capture it with `ws=$(hr_eval_require_temp_workspace)` and use
 # `git -C "$ws"` for every git call from then on, never a bare `git` that
 # trusts the shell's cwd.
+#
+# This function itself runs inside the caller's `ws=$(...)` command
+# substitution -- a subshell -- so it cannot usefully `unset` anything for
+# the caller (see the file-scope unset above, which is what actually does
+# that). What it CAN do, and does, is re-check that the unset already took:
+# if a GIT_* variable is set here, sourcing didn't happen, or something
+# re-exported it since, and this refuses rather than handing back a $ws a
+# later git call might not actually be confined to.
 hr_eval_require_temp_workspace() {
-  local ws
+  local ws v
+  for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR GIT_ALTERNATE_OBJECT_DIRECTORIES; do
+    eval "[ -z \"\${$v:-}\" ]" || hr_eval_refuse "$v is set; source fixtures/scaffold-safety.sh before calling this, not after"
+  done
   ws=$(pwd -P)
   hr_eval_is_under_temp "$ws" || hr_eval_refuse "workspace is not under a system temp directory: $ws"
   if git -C "$ws" rev-parse --git-dir >/dev/null 2>&1; then
     hr_eval_refuse "$ws is already inside a git repository"
   fi
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
   printf '%s' "$ws"
 }
 
