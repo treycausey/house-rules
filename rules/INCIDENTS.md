@@ -60,14 +60,14 @@ Python built-in file server in one side project had served the project's
 on the network for ten days.
 
 **Rule.** Bind dev servers to `127.0.0.1`. Reach them from other devices by
-publishing the loopback port through an authenticated private network (the
-kit's wording assumes Tailscale: `tailscale serve`), never by binding `0.0.0.0`.
+publishing the loopback port through an authenticated private network or
+proxy. Never bind `0.0.0.0`.
 Verify reachability from the device the claim is about, not from localhost.
 
-**Enforced by.** Hook `warn-public-bind.sh`, reversed after the audit, now
-blocks `0.0.0.0` binds and the default-bind file server. The second half of the
-rule, flagging a "reachable" claim tested only against localhost, lives in a
-separate hook, `warn-localhost-verify.sh`. Three weekly reviews in a row
+**Enforced by.** Hook `warn-public-bind.sh` warns on `0.0.0.0` binds and the
+default-bind file server. The second half of the rule, flagging a "reachable"
+claim tested only against localhost, lives in a separate hook,
+`warn-localhost-verify.sh`. Three weekly reviews in a row
 reported that check as unapplied because they read only the bind hook; the
 bind hook's header now points to the other file.
 

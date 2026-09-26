@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq
 # PreToolUse: Bash, Edit|Write
 # Blocks unrecoverable deletion or overwrite of secrets-like files.
 #
@@ -12,9 +15,10 @@
 # one manual command; a false negative costs the secret. Slightly conservative
 # is the right trade.
 #
-# ~/.claude/hooks/ is exempt: a hook that guards secrets gets a secrets-like
-# name, but it is a script, not a secret. The exemption is by location only;
-# a `secrets.sh` anywhere else can hold real exported keys and stays guarded.
+# This hook's own script directory is exempt: a guard script can have a
+# secrets-like name, but it is not a secret. The exemption follows the
+# installed plugin or copied hook directory. A `secrets.sh` elsewhere stays
+# guarded.
 #
 # Tested by hooks/tests/run-tests.sh
 
@@ -29,8 +33,25 @@ deny() {
   echo "Blocked: $1" >&2
   echo "Matched the secrets-file guard: $2" >&2
   echo "Secrets files are usually the only copy -- no git, no backup, nothing regenerates them." >&2
-  echo "If this is intentional, run it yourself outside the agent, or rename the file / adjust the patterns in ~/.claude/hooks/protect-secrets-files.sh." >&2
+  echo "If this is intentional, run it yourself outside the agent or adjust the guard's filename patterns." >&2
   exit 2
+}
+
+# Is this path under a system temp directory?
+is_system_temp_path() {
+  local path=$1 root canonical
+  for root in /tmp /var/tmp "${TMPDIR:-}"; do
+    [ -n "$root" ] || continue
+    root=${root%/}
+    case "$path" in "$root"|"$root"/*) return 0 ;; esac
+    if [ -d "$root" ]; then
+      canonical=$(cd -P "$root" 2>/dev/null && pwd)
+      if [ -n "$canonical" ]; then
+        case "$path" in "$canonical"|"$canonical"/*) return 0 ;; esac
+      fi
+    fi
+  done
+  return 1
 }
 
 # Is this path a secrets-like file that must not be destroyed?
@@ -38,7 +59,7 @@ is_secret_path() {
   local p=$1 base lower
   [ -n "$p" ] || return 1
 
-  # Normalise ~ and $HOME so the exemption prefixes see one shape.
+  # Normalise ~ and $HOME so the hook-directory exemption sees one shape.
   p=${p/#\~/$HOME}
   p=${p//\$HOME/$HOME}
 
@@ -46,12 +67,11 @@ is_secret_path() {
   # (`node_modules/foo/secrets.js`) the same way as an absolute one.
   case "$p" in /*) ;; *) p="/$p" ;; esac
 
-  # Scratch and vendored locations hold copies, not originals. The hooks dir
-  # holds hook scripts; one that guards secrets is named for them but holds
-  # none (creating block-secret-file-reads.sh there was blocked).
+  # System temp, scratchpad, and vendored locations hold copies, not originals.
+  is_system_temp_path "$p" && return 1
   case "$p" in
-    */tmp/*|*/scratchpad/*|*/node_modules/*|*/.Trash/*|*/Trash/*) return 1 ;;
-    "$HOME"/.claude/hooks/*) return 1 ;;
+    */scratchpad/*|*/node_modules/*|*/.Trash/*|*/Trash/*) return 1 ;;
+    "$HOUSE_RULES_HOOK_DIR"/*) return 1 ;;
   esac
 
   base=${p##*/}

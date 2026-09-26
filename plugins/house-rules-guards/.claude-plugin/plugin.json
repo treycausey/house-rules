@@ -1,0 +1,12 @@
+{
+  "name": "house-rules-guards",
+  "version": "0.1.0",
+  "description": "Block destructive, unsafe, and out-of-scope tool calls.",
+  "author": {
+    "name": "House Rules"
+  },
+  "homepage": "https://github.com/treycausey/house-rules",
+  "repository": "https://github.com/treycausey/house-rules",
+  "license": "MIT",
+  "keywords": ["hooks", "safety", "guardrails", "git", "secrets"]
+}

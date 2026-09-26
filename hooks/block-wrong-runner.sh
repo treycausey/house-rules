@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq python3
 # PreToolUse: Bash
 # Blocks bare "bun <script>" (should be "bun run <script>") and npm/yarn/pnpm usage.
 

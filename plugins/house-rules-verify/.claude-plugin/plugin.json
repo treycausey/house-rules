@@ -1,0 +1,12 @@
+{
+  "name": "house-rules-verify",
+  "version": "0.1.0",
+  "description": "Run formatters and verification reminders at hook events.",
+  "author": {
+    "name": "House Rules"
+  },
+  "homepage": "https://github.com/treycausey/house-rules",
+  "repository": "https://github.com/treycausey/house-rules",
+  "license": "MIT",
+  "keywords": ["hooks", "verification", "formatting", "checks"]
+}

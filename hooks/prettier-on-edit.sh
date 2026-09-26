@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq
 # PostToolUse: Edit|Write
 # Runs Prettier on the edited file if it's a formattable type AND the project
 # opted into Prettier. Without an opt-in check, Prettier's default printWidth

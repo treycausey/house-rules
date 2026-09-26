@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq
 # PostToolUse: Edit|Write
 # When a backend file declares /api/<prefix>/... routes, verify that prefix is
 # registered in the project's frontend proxy config (Next.js rewrites or Vite
@@ -21,7 +24,7 @@ case "$file" in
     fi
     ;;
   *.ts|*.tsx|*.js|*.mjs|*.mts)
-    if grep -qE '\b(app|router)\.(get|post|put|patch|delete)\(' "$file" 2>/dev/null; then
+    if grep -qE '(^|[^[:alnum:]_])(app|router)\.(get|post|put|patch|delete)\(' "$file" 2>/dev/null; then
       is_backend=true
     fi
     ;;

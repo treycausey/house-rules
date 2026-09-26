@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq python3
 # PreToolUse: Bash
 # Non-blocking nudge: `sed -i` / `perl -pi` rewriting a source or doc file.
 #
@@ -49,7 +52,11 @@ SOURCE_EXTS = {
     "html", "vue", "svelte", "c", "h", "cpp", "m", "mm", "kt", "java", "sql",
     "plist", "xml",
 }
-SCRATCH_PREFIXES = ("/tmp/", "/private/tmp/", "/var/tmp/")
+SCRATCH_ROOTS = {"/tmp", "/var/tmp", os.path.realpath("/tmp"), os.path.realpath("/var/tmp")}
+if os.environ.get("TMPDIR"):
+    SCRATCH_ROOTS.add(os.environ["TMPDIR"].rstrip("/"))
+    SCRATCH_ROOTS.add(os.path.realpath(os.environ["TMPDIR"]))
+SCRATCH_PREFIXES = tuple(root.rstrip("/").lower() + "/" for root in SCRATCH_ROOTS if root)
 
 
 def strip_heredocs(text):
@@ -191,7 +198,7 @@ def source_file(tok):
     if ext not in SOURCE_EXTS:
         return False
     low = tok.lower()
-    if low.startswith(SCRATCH_PREFIXES) or "/tmp/" in low:
+    if low.startswith(SCRATCH_PREFIXES):
         return False
     if "scratchpad" in low:
         return False

@@ -18,6 +18,8 @@ matches, even if the match is only a quoted mention.
 ```bash
 mkdir -p ~/.claude/hooks
 cp hooks/*.sh ~/.claude/hooks/
+mkdir -p ~/.claude/hooks/lib
+cp hooks/lib/hook-tools.sh ~/.claude/hooks/lib/
 chmod +x ~/.claude/hooks/*.sh
 ```
 
@@ -74,7 +76,7 @@ including the false positives that were reported against earlier versions.
 | `protect-secrets-files.sh` | Blocks `rm`, `mv`, truncation, or overwrite of secret-like files (`.env` and `.env.*` except `.env.schema`, names containing `secret` or `credential`, `.pem`, SSH private keys). Example, sample, and template files are exempt. Reads pass. | A secrets file is usually the only copy: gitignored, not in any backup, not regenerable. | A delegated agent ran `rm wifi_secrets.h`; the credentials were gone. |
 | `block-sensitive-git-add.sh` | Blocks `git add` that stages `.env*`, `.DS_Store`, or `tmp/`. For `.DS_Store` it also adds the gitignore entry. | Staging is where secrets enter history. | Weekly reviews flagged `.DS_Store` staging as a repeat nuisance for two months. An earlier version blocked `git add x && echo ".env staged?"`. |
 | `block-wrong-runner.sh` | Blocks `npm`, `yarn`, `pnpm`, and bare `bun <script>` / `bun test` in a repo whose `package.json` defines that script. **Opinionated:** it enforces a Bun-only estate. Delete it if you use npm. | Mixed package managers produce mixed lockfiles; bare `bun test` runs Bun's runner instead of the repo's `test` script. | Earlier text matching blocked `echo "npm install check"`. |
-| `warn-public-bind.sh` | Blocks dev servers that bind `0.0.0.0` (including the Python stdlib file server, which does so by default). | A server bound to all interfaces is on the whole LAN, usually with no auth. | A throwaway file server in a side project served that project's `.env` (mail, shipping, and LLM API keys) to the home network for ten days. |
+| `warn-public-bind.sh` | Warns on dev servers that bind `0.0.0.0` (including the Python stdlib file server, which does so by default). | A server bound to all interfaces is reachable on every network interface, often without auth. | A throwaway file server in a side project served that project's `.env` (mail, shipping, and LLM API keys) to the home network for ten days. |
 | `block-tmux-kill-server.sh` | Blocks `tmux kill-server`. | It ends every tmux session, including the one the agent may be running in, with no prompt. | |
 | `pre-commit-lint.sh` | Blocks `git commit` when staged files fail the repo's linter, or a staged file is very long. Triggers only on a real `git commit` invocation. | Lint errors were found by review after commit, again and again. | A `perl -pi` command whose replacement text contained "git commit" once triggered it. The trigger now parses commands. |
 | `fix-noclobber-redirect.sh` | Warns when `>` targets an existing file. | Under zsh `noclobber`, `>` fails on an existing file with an error that does not say why. | Matters for commands you hand to a human's shell; the agent's own shell usually has `noclobber` off. |
@@ -98,7 +100,7 @@ including the false positives that were reported against earlier versions.
 |---|---|---|---|
 | `prettier-on-edit.sh` | Runs Prettier on the edited file, only if the project opted into Prettier. | Formatting drift in review. | Without the opt-in check, Prettier's default 80-column width reflowed whole files in projects that never used it. |
 | `warn-long-file.sh` | Warns when an edited file passes 500 lines. | Long files are where agents lose track of what already exists. | |
-| `block-localhost-hardcode.sh` | Warns on `localhost` URLs hardcoded in browser-side source. | A browser on another device resolves `localhost` to itself. Use relative paths and a server-side proxy. | |
+| `block-localhost-hardcode.sh` | Warns on `localhost` URLs hardcoded in browser-side source. It runs after the edit, so it adds advice and cannot block the tool call. | A browser on another device resolves `localhost` to itself. Use relative paths and a server-side proxy. | |
 | `warn-field-mismatch.sh` | Warns on common backend/frontend field-name mismatches in API types (`metadata_` vs `metadata`, singular vs plural). | These contract bugs survived full implementation sessions and surfaced only in review. | |
 | `env-port-sweep.sh` | After a config file's port changes, warns about stale ports left in `.env*` files. | Gitignored `.env.local` files survive source changes. | |
 | `block-test-mocks.sh` | Warns on new mocks in test files, only in projects whose CLAUDE.md declares a no-mocks rule. | Mock-heavy tests pass while the app is broken. | It once fired globally, citing a rule the global CLAUDE.md did not contain, in a repo whose suite correctly used mocks. |
@@ -121,5 +123,21 @@ including the false positives that were reported against earlier versions.
 
 ## Hooks not included, and why
 
-Hooks tied to one person's devices, keychain layout, notification accounts,
-or private tools were dropped when this kit was assembled.
+Hooks tied to specific devices, keychain layouts, notification accounts, or
+private tools were dropped when this kit was assembled.
+
+## Plugin assignments
+
+`scripts/build-plugins.sh` copies these source scripts into each plugin. Do not
+edit a generated plugin copy; edit the source under `hooks/`, then rebuild.
+
+| Plugin | Hook scripts |
+|---|---|
+| `house-rules-guards` | `block-destructive-git.sh`, `block-edit-without-read.sh`, `block-localhost-hardcode.sh`, `block-sensitive-git-add.sh`, `block-shell-traps.sh`, `block-subagent-git-mutation.sh`, `block-subagent-path-escape.sh`, `block-test-mocks.sh`, `block-tmux-kill-server.sh`, `block-token-file-reads.sh`, `block-wrong-runner.sh`, `protect-secrets-files.sh`, `protect-ssh-config.sh` |
+| `house-rules-warnings` | `fix-noclobber-redirect.sh`, `retry-counter.sh`, `warn-field-mismatch.sh`, `warn-inplace-edit.sh`, `warn-localhost-verify.sh`, `warn-long-file.sh`, `warn-public-bind.sh` |
+| `house-rules-verify` | `env-port-sweep.sh`, `pre-commit-lint.sh`, `prettier-on-edit.sh`, `verify-before-done.sh`, `verify-proxy-routes.sh`, `verify-visual-edits.sh`, `xcodegen-stale-check.sh` |
+
+`house-rules-kit` has no hooks. It provides the four policy and workflow skills.
+Each script is in one plugin only. `block-localhost-hardcode.sh` and
+`block-test-mocks.sh` run after a tool call, so they add advice despite their
+names. `warn-public-bind.sh` also adds advice and allows the command to run.

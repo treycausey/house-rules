@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq python3
 # PreToolUse: Bash, Read
 # Blocks a bare dump of a known token-bearing file into the transcript and
 # names a redacted read instead.
@@ -345,7 +348,7 @@ case "$tool" in
     cmd=$(echo "$input" | jq -r '.tool_input.command // empty')
     [ -n "$cmd" ] || exit 0
     # Cheap pre-filter: nothing to do unless a listed name appears at all.
-    echo "$cmd" | grep -qiE 'hosts\.yml|buildkite-agent|\.netrc|\.npmrc|\.pypirc|git-credentials|\.docker/config\.json|\.aws/credentials|\.codex/auth\.json|\.credentials\.json|oauth_creds\.json|gcloud/.*credentials|\.kube/config|\.cargo/credentials|\.ssh/id_|\.pem\b|\.env|varlock' || exit 0
+    echo "$cmd" | grep -qiE 'hosts\.yml|buildkite-agent|\.netrc|\.npmrc|\.pypirc|git-credentials|\.docker/config\.json|\.aws/credentials|\.codex/auth\.json|\.credentials\.json|oauth_creds\.json|gcloud/.*credentials|\.kube/config|\.cargo/credentials|\.ssh/id_|\.pem([^[:alnum:]_]|$)|\.env|varlock' || exit 0
     # varlock: an explicit plaintext format on `load`, or un-redacted `run`
     # output, prints resolved secrets whatever directory it runs in. The
     # segment scan stops at ; & | so a later pipeline stage cannot hide it.

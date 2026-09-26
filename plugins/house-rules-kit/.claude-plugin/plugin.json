@@ -1,0 +1,12 @@
+{
+  "name": "house-rules-kit",
+  "version": "0.1.0",
+  "description": "House-rules policy, operations, and decision queue skills.",
+  "author": {
+    "name": "House Rules"
+  },
+  "homepage": "https://github.com/treycausey/house-rules",
+  "repository": "https://github.com/treycausey/house-rules",
+  "license": "MIT",
+  "keywords": ["skills", "policy", "operations", "decisions"]
+}

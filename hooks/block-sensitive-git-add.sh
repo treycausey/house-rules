@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq python3
 # PreToolUse: Bash
 # Blocks git add when the staged paths include .env files, .DS_Store, or tmp/.
 # For .DS_Store it also auto-fixes the repo (gitignore entry + untracking any
@@ -82,7 +85,7 @@ def tokenize(segment):
 
 
 def git_add_paths(tokens):
-    """Return the path operands if these tokens are a `git add`, else None."""
+    """Return (path operands, broad add) for a `git add`, else None."""
     if not tokens or tokens[0] != "git":
         return None
     i = 1
@@ -95,6 +98,7 @@ def git_add_paths(tokens):
     if i >= len(tokens) or tokens[i] != "add":
         return None
     paths = []
+    broad = False
     end_of_options = False
     for t in tokens[i + 1:]:
         if not end_of_options:
@@ -102,9 +106,13 @@ def git_add_paths(tokens):
                 end_of_options = True
                 continue
             if t.startswith("-"):
+                if t in ("-A", "--all", "-u", "--update"):
+                    broad = True
                 continue
         paths.append(t)
-    return paths
+    if any(path in (".", "./") for path in paths):
+        broad = True
+    return paths, broad
 
 
 def sensitive(path):
@@ -127,8 +135,6 @@ def auto_fix_ds_store(repo_cwd):
     the block stands regardless of whether this succeeds. Returns a list of
     actions taken, or None when there was nothing to act on (no cwd, not a
     git repo, or git itself failed)."""
-    if not repo_cwd or not os.path.isdir(repo_cwd):
-        return None
     try:
         top = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -171,10 +177,53 @@ def auto_fix_ds_store(repo_cwd):
         return None
 
 
+def sensitive_changes(repo_cwd):
+    """Return sensitive paths a broad git add would stage in this repo."""
+    if not repo_cwd or not os.path.isdir(repo_cwd):
+        return []
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], cwd=repo_cwd,
+            capture_output=True, text=True, timeout=10,
+        )
+        if top.returncode != 0:
+            return []
+        root = top.stdout.strip()
+        changed = subprocess.run(
+            ["git", "ls-files", "--modified", "--deleted", "--others",
+             "--exclude-standard", "-z"],
+            cwd=root, capture_output=True, text=True, timeout=10,
+        )
+        if changed.returncode != 0:
+            return []
+        return [path for path in changed.stdout.split("\0") if path and sensitive(path)]
+    except Exception:
+        return []
+
+
 for segment in split_segments(cmd):
-    paths = git_add_paths(tokenize(segment))
-    if not paths:
+    result = git_add_paths(tokenize(segment))
+    if result is None:
         continue
+    paths, broad = result
+
+    # Broad add forms can stage a changed, already-tracked .env file even when
+    # the command does not name it. Inspect the worktree before allowing them.
+    # If the event has no cwd, keep the hook pure and leave the verdict to git.
+    if broad and cwd:
+        for path in sensitive_changes(cwd):
+            message = (
+                "Blocked: refusing to stage secrets or temp files "
+                "(.env, .DS_Store, tmp/) through a broad git add. "
+                "Offending path: %s\n" % path
+            )
+            if os.path.basename(path) == ".DS_Store":
+                actions = auto_fix_ds_store(cwd)
+                if actions:
+                    message += "Auto-fixed: %s.\n" % "; ".join(actions)
+            sys.stderr.write(message)
+            sys.exit(2)
+
     for path in paths:
         if sensitive(path):
             message = (

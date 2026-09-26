@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq python3
 # PreToolUse: Bash, Edit|Write
 # Blocks a SUBAGENT from destroying or overwriting files OUTSIDE the session's
 # project root. Enforces the CLAUDE.md rule "Keep parallel agents on disjoint
@@ -26,20 +29,17 @@
 #   - the hook input's own `scratchpad_dir`
 #   - its parent session directory (holds this session's tasks/ and
 #     tool-results/)
-#   - $TMPDIR when set
-#   - /tmp and /private/tmp, EXCEPT the per-session Claude scratch trees under
-#     them (/tmp/claude-<uid>/... and /private/tmp/claude-<uid>/...). Those belong
-#     to one session each, and a subagent has no business deleting or
-#     overwriting another session's scratchpad, tasks or tool-results. A plain
-#     /private/tmp prefix would re-admit all of them, so they are excluded from
-#     the generic temp zones and reachable only through this session's own
-#     scratchpad/session roots above.
+#   - the system temp directory and $TMPDIR when set, EXCEPT per-session
+#     Claude scratch trees under them. Those belong to one session each, and a
+#     subagent must not overwrite another session's scratchpad or task files.
+#     They are excluded from generic temp roots and reachable only through this
+#     session's own scratchpad/session roots above.
 #   - ~/.Trash, and /dev/null, /dev/stdout, /dev/stderr, /dev/tty
 #
 # The project root is not in the hook input, so it is decoded from the encoded
 # project directory component of `transcript_path`
 # (~/.claude/projects/<encoded>/...) or `scratchpad_dir`
-# (/private/tmp/claude-<uid>/<encoded>/<session>/scratchpad). `<encoded>` is the
+# (a per-session temp directory/<encoded>/<session>/scratchpad). `<encoded>` is the
 # absolute path with every character outside [A-Za-z0-9-] replaced by `-`, so
 # decoding is ambiguous whenever a directory name contains `-`, `.` or a space
 # (`-Users-alice--claude`, `-Users-alice-dev-my-plugin-github`,
@@ -121,16 +121,18 @@ GIT_PATH_SUBS = {"checkout", "restore", "clean"}
 UNRESOLVABLE = re.compile("[$\\x60*?\\[]")
 ALWAYS_ALLOWED_FILES = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"}
 
-# Per-session Claude scratch trees. Generic temp (/tmp, /private/tmp, $TMPDIR)
-# is an always-allowed zone, but these subtrees of it are one directory per
-# SESSION: /private/tmp/claude-<uid>/<encoded project>/<session>/{scratchpad,
-# tasks,tool-results}. A bare /private/tmp prefix would make every other
-# session's scratch writable again, so a path under one of these prefixes is
-# NOT covered by the generic temp roots -- it matches only when it is inside
-# this session's own scratchpad_dir or session dir, which are added as
-# explicit (non-generic) roots.
+# Per-session Claude scratch trees. Generic temp directories are allowed, but
+# each claude-<uid> subdirectory belongs to one session. Those trees are not
+# covered by generic temp roots; only this session's scratchpad and session
+# directory are added as explicit roots.
 CLAUDE_TREE = "claude-%d" % os.getuid()
-CLAUDE_SESSION_TREES = ("/tmp/%s/" % CLAUDE_TREE, "/private/tmp/%s/" % CLAUDE_TREE)
+TEMP_ROOTS = {os.path.realpath("/tmp")}
+if os.environ.get("TMPDIR"):
+    TEMP_ROOTS.add(os.path.realpath(os.environ["TMPDIR"]))
+CLAUDE_SESSION_TREES = tuple(
+    os.path.join(root.rstrip("/"), CLAUDE_TREE) + "/"
+    for root in TEMP_ROOTS if root
+)
 
 
 # --- project-root decoding --------------------------------------------------
@@ -231,7 +233,7 @@ def expand(raw):
 
 
 def variants(p):
-    """The path plus its symlink-resolved form (/tmp -> /private/tmp)."""
+    """The path plus its symlink-resolved form."""
     out = [p]
     d = os.path.dirname(p) or "/"
     try:
@@ -248,7 +250,8 @@ def session_dir_root():
     """The session directory holding this session's scratchpad/tasks/tool-results.
 
     Returns None when it cannot be trusted: a scratchpad_dir one level too
-    shallow (e.g. '/private/tmp/claude-<uid>/x') would make its parent the whole
+    shallow (e.g. a per-session temp path with no encoded project component)
+    would make its parent the whole
     claude-<uid> tree, which is exactly the blanket allowance this guard drops.
     """
     if not scratchpad_dir or not scratchpad_dir.startswith("/"):
@@ -278,7 +281,6 @@ def build_roots():
     add(scratchpad_dir)
     add(session_dir_root())
     add("/tmp", generic=True)
-    add("/private/tmp", generic=True)
     add(os.environ.get("TMPDIR"), generic=True)
     add(os.path.join(HOME, ".Trash"))
     for extra in read_scope_file():

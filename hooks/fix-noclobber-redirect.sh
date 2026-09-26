@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq python3
 # PreToolUse: Bash. Shell options belong to the execution process, not this
 # hook process. Warn about a possible noclobber failure without claiming the
 # provider shell enables it. Native shell status remains the source of truth.

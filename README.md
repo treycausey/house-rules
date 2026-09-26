@@ -1,12 +1,8 @@
 # house-rules
 
-An operating kit for running a software estate with AI coding agents: many
-repos, one person, agents doing most of the typing, and written rules that
-hold because hooks enforce them.
-
-It comes from one person running about 40 repos with Claude Code. Most of the
-rules were written after something went wrong, and 15 of those incidents are
-written down next to the rules they produced.
+An operating kit for software repositories that use AI coding agents. It pairs
+written rules with hooks that check tool calls and skills that provide policy
+and operations guidance.
 
 ## Who it is for
 
@@ -19,6 +15,35 @@ written down next to the rules they produced.
 It is not a framework or a product. It is a set of files you copy and edit.
 
 ## What is inside
+
+### Install as plugins
+
+Add the marketplace once, then install the guard plugin:
+
+```text
+/plugin marketplace add treycausey/house-rules
+/plugin install house-rules-guards@house-rules
+```
+
+| Plugin | What it does | When to turn it off |
+|---|---|---|
+| `house-rules-guards` | Blocks destructive git operations, unsafe secret-file changes, unsafe token reads, and out-of-scope subagent writes. | When you want none of the blocking hooks enabled. Review the consequences first. |
+| `house-rules-warnings` | Adds advice for risky commands and edits. Includes the retry counter and zsh redirection advice. | When you do not want the advice or retry reminders. |
+| `house-rules-verify` | Runs formatters and checks, and reminds the agent to verify changed work. | When the project does not use the configured tools or you want to manage these checks yourself. |
+| `house-rules-kit` | Provides the house-rules, ship-policy, fleet-standard, and decide skills. It has no hooks. | When you do not want these skills available. |
+
+Claude Code enables or disables each plugin as a whole. Two hooks with `block-`
+names run after a tool call and can only add advice: `block-localhost-hardcode`
+and `block-test-mocks`. `warn-public-bind` also adds advice and does not block.
+
+### Copy by hand
+
+If you prefer manual setup, copy the hook scripts, merge the settings, and add
+the rules yourself. See [Five-minute install](#five-minute-install) below.
+
+The hook sources stay in `hooks/`. `scripts/build-plugins.sh` copies each hook
+to one plugin, builds the kit skills from the source docs, and keeps the copies
+in sync. `hooks/tests/run-tests.sh` checks that sync.
 
 | Path | What it is |
 |---|---|
@@ -35,12 +60,7 @@ It is not a framework or a product. It is a set of files you copy and edit.
 You need Claude Code, `bash`, `jq`, `python3` 3.9+, and `git`. For `decide`, also
 [Bun](https://bun.sh).
 
-**1. Get the kit.**
-
-```bash
-git clone https://github.com/treycausey/house-rules
-cd house-rules
-```
+**1. Get the kit.** Clone this repository, then change to its directory.
 
 **2. Run the hook tests on your machine.**
 
@@ -54,8 +74,9 @@ not work on your machine as written; read the failure before installing it.
 **3. Install the hooks.** Either for every project (`~/.claude`):
 
 ```bash
-mkdir -p ~/.claude/hooks
+mkdir -p ~/.claude/hooks/lib
 cp -i hooks/*.sh ~/.claude/hooks/     # -i: asks before replacing a hook you already have
+cp -i hooks/lib/hook-tools.sh ~/.claude/hooks/lib/
 chmod +x ~/.claude/hooks/*.sh
 ```
 
@@ -97,12 +118,9 @@ Some hooks encode one estate's choices rather than general safety:
 - `prettier-on-edit.sh` runs only in projects that already use Prettier.
 - `verify-visual-edits.sh` expects a screenshot command after UI edits. Set
   `SCREENSHOT_CMD_RE` to your tool's name.
-- `block-shell-traps.sh` and `fix-noclobber-redirect.sh` are for zsh on macOS.
-  Their traps (bare `log`, missing `timeout`, `noclobber`, `=` words) do not
-  apply to bash on Linux.
-- `warn-public-bind.sh` and `warn-localhost-verify.sh` assume other devices
-  reach dev servers through Tailscale (`tailscale serve`, `tailscale ip`). The
-  0.0.0.0 block is general; the suggested fix in the message is not.
+- `block-shell-traps.sh` checks zsh-specific and macOS-specific traps only on
+  those platforms. `fix-noclobber-redirect.sh` warns about existing-file
+  redirects in shells that use `noclobber`.
 
 ## Limits
 
@@ -112,15 +130,12 @@ Read these before you install anything.
   input (`tool_input`, `agent_id`, `transcript_path`, `scratchpad_dir`). Other
   agent tools will need adapters. The rules file is plain text and works with
   any agent that reads an instructions file.
-- **macOS first.** The hooks and tests were written and run on macOS with
-  zsh. Some rules and hooks are about macOS specifically (launchd, `/bin/bash`
-  3.2, zsh traps, iCloud eviction, XcodeGen). Most hooks are plain bash and
-  Python. A review run of the suite on Debian passed 542 of 543; the failure
-  was the `timeout` trap test, which assumed `timeout` is absent. That test is
-  now conditional. Linux has otherwise had one run, not daily use.
-- **Tailscale assumed for cross-device access.** The networking rules and
-  `warn-public-bind.sh`'s message assume a Tailscale tailnet. Substitute your
-  own private network or tunnel.
+- **Platform-specific checks remain.** `block-shell-traps.sh` adapts its
+  checks to zsh and macOS. `xcodegen-stale-check.sh` applies only to XcodeGen
+  projects. Other hooks use Bash, Python, and common GNU or BSD tools.
+- **Private networking is up to the project.** The networking rules recommend
+  an authenticated proxy or private network for remote access. Choose the
+  mechanism that fits your setup.
 - **Hooks are guardrails, not a sandbox.** They parse commands to decide what
   runs, and a determined or confused agent can phrase a command they do not
   recognize. Use them with Claude Code's permission settings and sandbox, not
@@ -157,8 +172,4 @@ goes in:
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE). Copyright (c) 2026 Trey Causey.
-
-## Author
-
-Trey Causey.
+MIT. See [`LICENSE`](LICENSE).

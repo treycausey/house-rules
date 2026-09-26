@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq python3
 # PreToolUse: Bash. Block zsh/macOS commands that fail with an error pointing
 # at the wrong cause, and name the working spelling. Each rule is a trap that
 # cost real time; the list is in rules/CLAUDE.md, "Shell and macOS traps".
@@ -10,12 +13,16 @@ cmd=$(echo "$input" | jq -r '.tool_input.command // empty')
 [ -z "$cmd" ] && exit 0
 
 python3 - "$cmd" <<'PY'
+import os
 import re
 import shlex
 import shutil
 import sys
 
 cmd = sys.argv[1]
+shell_name = os.path.basename(os.environ.get("SHELL", ""))
+is_zsh = shell_name == "zsh"
+is_macos = sys.platform == "darwin"
 
 
 def strip_heredocs(text):
@@ -67,14 +74,15 @@ def unquote(t):
 def check(words):
     in_dbl_bracket = "[[" in words
     # `=word` is expanded by zsh EQUALS anywhere in the command.
-    for w in words:
-        if not in_dbl_bracket and len(w) > 1 and w[0] == "=":
-            return ("zsh expands a word starting with '=' as a command path (EQUALS), "
-                    "so %s fails and zsh silently skips the rest of this Bash call. "
-                    "Quote it ('%s') or use a divider that does not start with '='." % (w, w))
+    if is_zsh:
+        for w in words:
+            if not in_dbl_bracket and len(w) > 1 and w[0] == "=":
+                return ("zsh expands a word starting with '=' as a command path, "
+                        "so %s fails and zsh skips the rest of this call. "
+                        "Quote it ('%s') or use a divider that does not start with '='." % (w, w))
     i = 0
     while i < len(words) and (words[i] in PREFIXES or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[i])):
-        if words[i].startswith("status="):
+        if is_zsh and words[i].startswith("status="):
             return ("zsh reserves 'status' as a read-only variable (alias of $?). "
                     "Use another name such as 'state' or 'st'.")
         i += 1
@@ -82,23 +90,23 @@ def check(words):
         return None
     w = unquote(words[i])
     args = [unquote(a) for a in words[i + 1:]]
-    if w == "for" and args[:1] == ["status"]:
+    if is_zsh and w == "for" and args[:1] == ["status"]:
         return ("zsh reserves 'status' as a read-only variable (alias of $?). "
                 "Use another loop variable such as 'state' or 'st'.")
-    if w == "log" and args[:1] and args[0] in {"show", "stream", "collect", "config", "erase", "stats"}:
-        return ("In zsh, bare 'log' is a builtin (it lists watched users), so this fails with "
-                "'too many arguments'. Spell /usr/bin/log %s ..." % args[0])
+    if is_zsh and w == "log" and args[:1] and args[0] in {"show", "stream", "collect", "config", "erase", "stats"}:
+        return ("In zsh, bare 'log' is a builtin, so this does not run the system log tool. "
+                "Use the executable name or full path for your platform's log tool.")
     if w in {"timeout", "gtimeout"} and not shutil.which(w):
         return ("macOS has no %s(1); the wrapper would exit 127 and read as the wrapped command failing. "
                 "Use the tool's own timeout flag (curl --max-time, ssh -o ConnectTimeout=, nc -w) "
                 "or a bash-loop watchdog." % w)
-    if w == "strings" and not any(re.fullmatch(r"-[A-Za-z]*a[A-Za-z]*|--all", a) for a in args):
+    if is_macos and w == "strings" and not any(re.fullmatch(r"-[A-Za-z]*a[A-Za-z]*|--all", a) for a in args):
         return ("macOS strings(1) skips the (__TEXT,__text) section without -a, so a missing "
                 "match reads as 'never baked in'. Spell: strings -a <binary>")
-    if w == "ssh-add" and any(a.startswith("--apple") for a in args):
-        return ("Homebrew's ssh-add shadows Apple's and has no long options. "
-                "Spell /usr/bin/ssh-add %s" % " ".join(a for a in args if a.startswith("--apple")))
-    if w == "mdutil" and "-E" in args and args[-1:] == ["/"]:
+    if is_macos and w == "ssh-add" and any(a.startswith("--apple") for a in args):
+        return ("This ssh-add does not support the Apple keychain option. "
+                "Use the platform-provided ssh-add that supports this option.")
+    if is_macos and w == "mdutil" and "-E" in args and args[-1:] == ["/"]:
         return ("On current macOS '/' is the sealed read-only system volume, so this silently no-ops. "
                 "Use: mdutil -E /System/Volumes/Data")
     return None

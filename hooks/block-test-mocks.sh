@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq
 # PostToolUse: Edit|Write
 # Flags test-file edits that introduce mocking primitives — but ONLY in
 # projects whose own CLAUDE.md actually declares a no-mocks rule.

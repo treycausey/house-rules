@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq
 # Stop hook
 # When Claude stops with uncommitted full-stack changes, reminds to verify
 # the user-visible flow in the browser before claiming done.
@@ -49,7 +52,15 @@ if [ "$backend" -le 2 ] && [ "$backend" -gt 0 ]; then
     case "$fn" in
       main|app|test|setup|config|init|run|start|stop|get|set|put|post|delete|patch|handle|create|update|remove|list) continue ;;
     esac
-    callsites=$(grep -rl --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' "$fn" "$repo_root/src" "$repo_root/app" "$repo_root/apps" "$repo_root/backend" "$repo_root/frontend" 2>/dev/null | wc -l || true)
+    search_roots=()
+    for candidate in "$repo_root/src" "$repo_root/app" "$repo_root/apps" "$repo_root/backend" "$repo_root/frontend"; do
+      [ -d "$candidate" ] && search_roots+=("$candidate")
+    done
+    if [ ${#search_roots[@]} -gt 0 ]; then
+      callsites=$(find "${search_roots[@]}" -type f \( -name '*.py' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) -exec grep -lF "$fn" {} + 2>/dev/null | wc -l || true)
+    else
+      callsites=0
+    fi
     if [ "$callsites" -gt 2 ]; then
       reminders="${reminders}VERIFY: You modified '$fn' which appears in $callsites files. If this is a behavior change (formatting, timezone, validation), check all callsites so the fix lands everywhere the function is used.\n\n"
     fi

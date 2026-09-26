@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq
 # PostToolUse: Edit|Write
 # After creating/changing a .swift file in an XcodeGen project, remind to run
 # `xcodegen generate` before the next build. The build-fail -> regen -> rebuild

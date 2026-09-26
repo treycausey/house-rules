@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq python3
 # Stop hook: require a screenshot after the final CSS or layout edit.
 # Set SCREENSHOT_CMD_RE to the command name(s) your screenshot tool uses, as a
 # regex alternation (default: webshot|shot-scraper|playwright).

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
 # PreToolUse: Bash
 # Blocks destructive git commands that require explicit approval from the user:
 #   push with -f / --force (incl. --force-with-lease), reset --hard,
@@ -53,13 +55,37 @@
 # Tested by hooks/tests/run-tests.sh
 
 input=$(cat)
-cmd=$(echo "$input" | jq -r '.tool_input.command // empty')
-[ -z "$cmd" ] && exit 0
 
 deny() {
   echo "Blocked: destructive git command requires explicit approval from the user." >&2
   exit 2
 }
+
+# This guard fails closed when it cannot parse the hook payload or command.
+# The raw fallback can match quoted mentions; that is safer than allowing an
+# unparsed destructive command.
+raw_fallback() {
+  local text="$1"
+  local pattern
+  pattern='git[[:space:]]+(push[[:space:]]+([^[:space:]]+[[:space:]]+)*(--force([^[:alnum:]_]|$)|-[[:alnum:]]*f[[:alnum:]]*([^[:alnum:]_-]|$))|reset[[:space:]]+--hard|checkout[[:space:]]+([^[:space:]]+[[:space:]]+)*(\.|\./|\.\.|\.\./)([[:space:]]|$)|restore[[:space:]]+([^[:space:]]+[[:space:]]+)*(\.|\./|\.\.|\.\./)([[:space:]]|$)|clean[[:space:]]+(--force|-[[:alpha:]]*f[[:alpha:]]*))'
+  if printf '%s' "$text" | tr '\n' ' ' | grep -Eiq "$pattern"; then
+    deny
+  fi
+  exit 0
+}
+
+if ! command -v jq >/dev/null 2>&1; then
+  printf 'house-rules: jq not found; using fail-closed raw-text match for destructive git commands\n' >&2
+  raw_fallback "$input"
+fi
+
+cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+[ -z "$cmd" ] && exit 0
+
+if ! command -v python3 >/dev/null 2>&1; then
+  printf 'house-rules: python3 not found; using fail-closed raw-text match for destructive git commands\n' >&2
+  raw_fallback "$cmd"
+fi
 
 # Prints exactly one line: `allow`, `block <what>`, or `fallback`.
 verdict=$(python3 - "$cmd" <<'PY' 2>/dev/null
@@ -701,14 +727,5 @@ case "$verdict" in
 esac
 
 # Fallback: the resolver gave no verdict or cannot see everything this command
-# runs. Use the old anchored regex over the raw text. A whole-tree pathspec is
-# `.`, `./`, `..` or `../` as the ENTIRE argument, followed by whitespace, end
-# of line, a shell separator, or a closing quote; unanchored, `\.` also
-# matched a dotfile path such as `.gitignore`.
-tree='\.{1,2}/?(\s|$|[;&|)"'\''`])'
-
-if echo "$cmd" | grep -qE "git\s+(push\s+[^|&\n]*(-f\b|--force)|reset\s+--hard|checkout\s+${tree}|restore\s+(${tree}|--staged\s+${tree})|clean\s+-[a-zA-Z]*f)"; then
-  deny
-fi
-
-exit 0
+# runs. Use the same fail-closed raw-text match as the missing-tool path.
+raw_fallback "$cmd"

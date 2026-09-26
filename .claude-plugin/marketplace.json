@@ -1,0 +1,33 @@
+{
+  "name": "house-rules",
+  "description": "Claude Code plugins for safety hooks, verification, and repository policy skills.",
+  "owner": {
+    "name": "House Rules"
+  },
+  "plugins": [
+    {
+      "name": "house-rules-guards",
+      "source": "./plugins/house-rules-guards",
+      "version": "0.1.0",
+      "description": "Block destructive, unsafe, and out-of-scope tool calls."
+    },
+    {
+      "name": "house-rules-warnings",
+      "source": "./plugins/house-rules-warnings",
+      "version": "0.1.0",
+      "description": "Add context when a command or edit needs review."
+    },
+    {
+      "name": "house-rules-verify",
+      "source": "./plugins/house-rules-verify",
+      "version": "0.1.0",
+      "description": "Run formatters and verification reminders at hook events."
+    },
+    {
+      "name": "house-rules-kit",
+      "source": "./plugins/house-rules-kit",
+      "version": "0.1.0",
+      "description": "Load house-rules guidance and the decision queue workflow."
+    }
+  ]
+}

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq python3
 # PreToolUse: Bash
 # Blocks a SUBAGENT from mutating shared git state: stash, checkout, switch,
 # reset, commit. Enforces the CLAUDE.md rule "Subagents must not mutate shared

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq
 # PreToolUse: Bash, Edit|Write
 # Blocks modification of anything under ~/.ssh.
 #
@@ -29,7 +32,7 @@
 
 input=$(cat)
 
-ssh_dir_re='(~|\$HOME|/Users/[^/[:space:]]+)/\.ssh/'
+ssh_dir_re='(~|\$HOME|/([Uu]sers|home)/[^/[:space:]]+|/root)/\.ssh(/|$)'
 
 deny() {
   echo "Blocked: refusing to modify $1." >&2
@@ -47,6 +50,9 @@ if [ -n "$file_path" ]; then
   case "$resolved" in
     "$HOME"/.ssh/*) deny "$file_path" ;;
   esac
+  if printf '%s' "$resolved" | grep -qE "$ssh_dir_re"; then
+    deny "$file_path"
+  fi
   exit 0
 fi
 

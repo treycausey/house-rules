@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq
 # PostToolUse: Edit|Write
 # When editing API types/schemas, checks if field names have common mismatch
 # patterns between backend and frontend.
@@ -32,7 +35,7 @@ case "$file" in
     ;;
   *.ts|*.tsx)
     # TS interface properties: "fieldName: Type" or "fieldName?:"
-    fields=$(grep -oE '^\s+[a-z][a-zA-Z_]+\??\s*:' "$file" 2>/dev/null | sed 's/[?: ]//g' | sort -u)
+    fields=$(sed -nE 's/^[[:space:]]+([a-z][a-zA-Z_]*)[?]?[[:space:]]*:.*/\1/p' "$file" 2>/dev/null | sort -u)
     ;;
 esac
 
@@ -44,7 +47,8 @@ for f in $fields; do
   if [[ "$f" == *_ ]]; then
     base="${f%_}"
     # Check if frontend files reference the base name without underscore
-    frontend_hits=$(grep -rl --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' "\b${base}\b" "$repo_root" 2>/dev/null | grep -v node_modules | grep -v '.d.ts' | head -3)
+    field_pattern="(^|[^[:alnum:]_])${base}([^[:alnum:]_]|$)"
+    frontend_hits=$(find "$repo_root" -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) ! -path '*/node_modules/*' ! -name '*.d.ts' -exec grep -lE "$field_pattern" {} + 2>/dev/null | head -3)
     if [ -n "$frontend_hits" ]; then
       warnings="${warnings}Field '$f' in $(basename "$file") -- frontend files reference '$base' (without trailing underscore). Ensure serialization alias is set.\n"
     fi

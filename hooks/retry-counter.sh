@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+HOUSE_RULES_HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$HOUSE_RULES_HOOK_DIR/lib/hook-tools.sh"
+house_rules_require jq
 # PostToolUseFailure: Bash
 # PostToolUse fires only when a tool call SUCCEEDS, so a failure counter wired
 # there never saw a single failure. PostToolUseFailure is the event that fires
@@ -27,21 +30,37 @@ sig=$(echo "$sig" | sed -E 's|/[^ ]+/||g; s/[0-9]{3,}/#/g; s/line [0-9]+/line #/
 # process, so a `$$`-keyed path was a brand new file every time and the count
 # never reached 2, let alone 3 -- the warning could not fire at all.
 sid=$(echo "$input" | jq -r '.session_id // empty')
+data_dir="${CLAUDE_PLUGIN_DATA:-${TMPDIR:-/tmp}/house-rules-retry}"
+if ! mkdir -p "$data_dir" 2>/dev/null; then
+  printf 'house-rules: retry counter skipped; cannot create its state directory\n' >&2
+  exit 0
+fi
+umask 077
+sid=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9._-')
+[ -n "$sid" ] || sid=unknown
 if [ -n "$sid" ]; then
-  tracker="/tmp/claude-retry-tracker-${sid}"
+  tracker="$data_dir/retry-${sid}.log"
 else
-  tracker="/tmp/claude-retry-tracker"
+  tracker="$data_dir/retry-unknown.log"
 fi
 
 # Clean entries older than 10 minutes
 if [ -f "$tracker" ]; then
   now=$(date +%s)
-  tmpf=$(mktemp)
+  tmpf="${tracker}.tmp.$$"
+  : > "$tmpf" || {
+    printf 'house-rules: retry counter skipped; cannot refresh its state file\n' >&2
+    exit 0
+  }
   while IFS='|' read -r ts s; do
     age=$((now - ts))
     [ "$age" -lt 600 ] && echo "${ts}|${s}" >> "$tmpf"
   done < "$tracker"
-  mv "$tmpf" "$tracker" 2>/dev/null || true
+  if ! mv "$tmpf" "$tracker" 2>/dev/null; then
+    rm -f "$tmpf"
+    printf 'house-rules: retry counter skipped; cannot update its state file\n' >&2
+    exit 0
+  fi
 fi
 
 # Append current failure
@@ -58,8 +77,15 @@ if [ "$count" -ge 3 ]; then
   # never ran. The tracker kept its 3 entries, the warning fired again on the
   # next failure, and a stray .tmp file was left behind each time. Unreachable
   # until the tracker started accumulating at all.
-  grep -vF "|${sig}" "$tracker" > "${tracker}.tmp" 2>/dev/null
-  mv "${tracker}.tmp" "$tracker" 2>/dev/null || true
+  if ! grep -vF "|${sig}" "$tracker" > "${tracker}.tmp" 2>/dev/null; then
+    # No remaining matches is the normal reset case. The redirection still
+    # creates the empty tracker file.
+    :
+  fi
+  if ! mv "${tracker}.tmp" "$tracker" 2>/dev/null; then
+    rm -f "${tracker}.tmp"
+    printf 'house-rules: retry counter warning was sent, but its state could not be reset\n' >&2
+  fi
 fi
 
 exit 0

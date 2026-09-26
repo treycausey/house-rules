@@ -39,7 +39,8 @@ In order:
 5. **Verify the target directly**, then tell the owner what shipped. Do not ask
    first.
 
-"Verify the target" means evidence from the target, not from the laptop:
+"Verify the target" means evidence from the target, not from the development
+machine:
 
 - `git log origin/<branch>..HEAD` is empty (the push happened).
 - The deploy endpoint responds, and its `startedAt` is after the restart.

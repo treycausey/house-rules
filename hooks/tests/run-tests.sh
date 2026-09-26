@@ -22,6 +22,15 @@ set -uo pipefail
 
 HOOKS_DIR="${HOOKS_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 SETTINGS="${SETTINGS:-$HOOKS_DIR/settings.example.json}"
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+
+# Keep fixtures away from the live home directory. This also makes the suite
+# usable in restricted workspaces where $HOME is read-only.
+mkdir -p "$REPO_ROOT/tmp"
+TEST_HOME=$(mktemp -d "$REPO_ROOT/tmp/hook-test-home.XXXXXX") || exit 1
+HOME="$TEST_HOME"
+export HOME
+trap 'rm -rf "$TEST_HOME"' EXIT
 
 pass=0
 fail=0
@@ -57,6 +66,32 @@ while IFS= read -r h; do
   if [ -f "$HOOKS_DIR/$h" ]; then ok "referenced: $h"
   else bad "referenced but missing: $h" "settings.json wires it; the call will exit 127"; fi
 done <<< "$refs"
+
+if [ -f "$REPO_ROOT/scripts/build-plugins.sh" ]; then
+  section "plugin scripts match hooks source"
+  if bash "$REPO_ROOT/scripts/build-plugins.sh" --check; then
+    ok "generated plugin files are in sync"
+  else
+    bad "plugin copies are out of sync; run bash scripts/build-plugins.sh"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Missing jq must make ordinary hooks fail open with one concise note.
+# ---------------------------------------------------------------------------
+section "missing required tool"
+NO_JQ=$(mktemp -d "${TMPDIR:-/tmp}/hook-no-jq.XXXXXX")
+BASH_BIN=$(command -v bash)
+dep_out=$(PATH="$NO_JQ" "$BASH_BIN" -c '. "$1"; house_rules_require jq' _ "$HOOKS_DIR/lib/hook-tools.sh" 2>&1)
+dep_rc=$?
+dep_lines=$(printf '%s\n' "$dep_out" | wc -l | tr -d ' ')
+if [ "$dep_rc" -eq 0 ] && [ "$dep_lines" -eq 1 ] \
+   && printf '%s' "$dep_out" | grep -q 'required command not found: jq'; then
+  ok "missing jq fails open with one stderr line"
+else
+  bad "missing jq must fail open with one stderr line" "exit $dep_rc: $dep_out"
+fi
+rm -rf "$NO_JQ"
 
 # ---------------------------------------------------------------------------
 # 3. Every hook parses under the oldest bash it could be run with.
@@ -109,7 +144,9 @@ else
   expect_block_cmd 'mv /tmp/foo ~/.ssh/config'
   expect_block_cmd 'cp /tmp/foo ~/.ssh/config'
   expect_block_cmd 'echo k >> $HOME/.ssh/authorized_keys'
-  expect_block_cmd 'rm /Users/alice/.ssh/id_ed25519'
+  LINUX_HOME="/$(printf '%s/%s' home example)"
+  expect_block_cmd "rm $LINUX_HOME/.ssh/id_ed25519"
+  expect_block_cmd "rm -rf $LINUX_HOME/.ssh"
   expect_block_cmd 'truncate -s 0 ~/.ssh/known_hosts'
 
   # Reads and unrelated paths must pass through.
@@ -188,6 +225,26 @@ else
   expect_gitadd_allow 'git add -A'
   expect_gitadd_allow 'git add .'
 
+  # A broad add can stage a modified .env file if it is already tracked. The
+  # hook must inspect the worktree instead of trusting the pathspec alone.
+  BROAD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-broad-tests.XXXXXX")
+  git -C "$BROAD_DIR" init -q
+  printf 'SECRET=old\n' > "$BROAD_DIR/.env"
+  printf 'source\n' > "$BROAD_DIR/source.txt"
+  git -C "$BROAD_DIR" add -f .env source.txt
+  git -C "$BROAD_DIR" -c user.name=fixture -c user.email=fixture.invalid commit -qm initial
+  printf '{"cwd":%s,"tool_input":{"command":"git add -A"}}' \
+    "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$BROAD_DIR")" \
+    | bash "$GITADD_HOOK" 2>/dev/null
+  [ $? -eq 0 ] && ok "allows broad add with no sensitive changes" || bad "should allow a clean broad add"
+  printf 'SECRET=new\n' > "$BROAD_DIR/.env"
+  printf '{"cwd":%s,"tool_input":{"command":"git add -A"}}' \
+    "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$BROAD_DIR")" \
+    | bash "$GITADD_HOOK" 2>/dev/null
+  [ $? -eq 2 ] && ok "blocks broad add when tracked .env changed" \
+                || bad "broad git add must not stage a changed .env"
+  rm -rf "$BROAD_DIR" 2>/dev/null || bad "could not remove fixture dir $BROAD_DIR"
+
   # Actual sensitive path operands, wherever the git add sits in the command.
   expect_gitadd_block 'git add .env'
   expect_gitadd_block 'git add path/to/.env.local'
@@ -233,6 +290,21 @@ else
     && ok ".env block leaves the repo untouched" || bad ".env block modified the repo"
   rm -rf "$DS_DIR" 2>/dev/null || bad "could not remove fixture dir $DS_DIR"
 fi
+
+# ---------------------------------------------------------------------------
+# Behaviour: block-tmux-kill-server.sh
+# ---------------------------------------------------------------------------
+section "block-tmux-kill-server.sh behaviour"
+TMUX_HOOK="$HOOKS_DIR/block-tmux-kill-server.sh"
+run_tmux_hook() { printf '{"tool_input":{"command":%s}}' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$1")" | bash "$TMUX_HOOK" 2>/dev/null; }
+run_tmux_hook 'tmux kill-server'
+[ $? -eq 2 ] && ok "blocks tmux kill-server" || bad "should block tmux kill-server"
+run_tmux_hook 'sudo tmux kill-server'
+[ $? -eq 2 ] && ok "blocks wrapped tmux kill-server" || bad "should block a wrapped tmux kill-server"
+run_tmux_hook '/usr/bin/tmux kill-server'
+[ $? -eq 2 ] && ok "blocks a path-qualified tmux kill-server" || bad "should block a path-qualified tmux kill-server"
+run_tmux_hook 'tmux list-sessions'
+[ $? -eq 0 ] && ok "allows tmux list-sessions" || bad "should allow tmux list-sessions"
 
 # ---------------------------------------------------------------------------
 # 6. Behaviour: fix-noclobber-redirect.sh
@@ -547,11 +619,10 @@ fi
 # ---------------------------------------------------------------------------
 # 8. Behaviour: warn-localhost-verify.sh
 #    Non-blocking PostToolUse nudge: a curl/wget/nc probe against loopback
-#    gets additionalContext reminding that localhost reachability is not
-#    LAN/tailnet reachability. It must never block (always exit 0), never
-#    fire on non-probe commands that merely mention 127.0.0.1 (tailscale
-#    serve targets, binds), and stay quiet when the same command already
-#    probes a tailnet address.
+#    gets additionalContext reminding that localhost reachability does not
+#    prove reachability from another network position. It must never block,
+#    never fire on non-probe commands that mention a loopback bind, and stay
+#    quiet when the same command also probes an external address.
 # ---------------------------------------------------------------------------
 section "warn-localhost-verify.sh behaviour"
 WLV_HOOK="$HOOKS_DIR/warn-localhost-verify.sh"
@@ -579,18 +650,57 @@ else
   expect_wlv_warn 'nc -z 127.0.0.1 3000'
   expect_wlv_warn 'echo checking && curl http://localhost:3000'
 
-  # Probes against the real target are the real test.
-  expect_wlv_quiet 'curl -s http://100.64.0.10:3000/api/health'
-  expect_wlv_quiet 'curl http://127.0.0.1:3000 && curl http://100.64.0.10:3000'
-  expect_wlv_quiet 'curl "http://$(tailscale ip -4):3000/"'
-  expect_wlv_quiet 'curl https://myhost.tailnet-name.ts.net/'
+  # Probes from another network position are the real test.
+  expect_wlv_quiet 'curl -s http://192.0.2.10:3000/api/health'
+  expect_wlv_quiet 'curl http://127.0.0.1:3000 && curl http://192.0.2.10:3000'
+  expect_wlv_quiet 'curl https://service.example/'
 
   # Non-probe commands that mention loopback are config, not verification.
-  expect_wlv_quiet 'tailscale serve --bg --tcp=3000 tcp://127.0.0.1:3000'
+  expect_wlv_quiet 'server --proxy-target 127.0.0.1:3000'
   expect_wlv_quiet 'uvicorn app:app --host 127.0.0.1 --port 3000'
   expect_wlv_quiet 'git status'
   expect_wlv_quiet 'curl https://example.com/api'
 fi
+
+# ---------------------------------------------------------------------------
+# 8b. Behaviour: warn-public-bind.sh
+#      Advises on public binds and always allows the tool call.
+# ---------------------------------------------------------------------------
+section "warn-public-bind.sh behaviour"
+WPB_HOOK="$HOOKS_DIR/warn-public-bind.sh"
+run_wpb_hook() { printf '{"tool_input":{"command":%s}}' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$1")" | bash "$WPB_HOOK" 2>/dev/null; }
+out=$(run_wpb_hook 'bun run dev --host 0.0.0.0')
+rc=$?
+if [ "$rc" -eq 0 ] && echo "$out" | jq -e '.hookSpecificOutput.hookEventName == "PreToolUse" and (.hookSpecificOutput.additionalContext | contains("all network interfaces"))' >/dev/null; then
+  ok "warns on a dev server bound to all interfaces and allows it"
+else
+  bad "should advise without blocking a public bind"
+fi
+out=$(run_wpb_hook 'bun run dev --host 127.0.0.1')
+[ $? -eq 0 ] && [ -z "$out" ] && ok "stays quiet on a loopback bind" || bad "should stay quiet on a loopback bind"
+
+# ---------------------------------------------------------------------------
+# 8c. Behaviour: env-port-sweep.sh
+#      Finds stale development ports in shallow .env* files without GNU find
+#      extensions or GNU grep word-boundary syntax.
+# ---------------------------------------------------------------------------
+section "env-port-sweep.sh behaviour"
+EPS_HOOK="$HOOKS_DIR/env-port-sweep.sh"
+EPS_DIR=$(mktemp -d "$REPO_ROOT/tmp/envport-hook-tests.XXXXXX")
+git -C "$EPS_DIR" init -q
+printf 'export default { port: 3000 };\n' > "$EPS_DIR/next.config.js"
+printf 'APP_PORT=4242\n' > "$EPS_DIR/.env.local"
+run_eps_hook() { printf '{"tool_input":{"file_path":%s}}' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$EPS_DIR/next.config.js")" | bash "$EPS_HOOK" 2>/dev/null; }
+out=$(run_eps_hook)
+if echo "$out" | jq -e '.additionalContext | contains("4242")' >/dev/null; then
+  ok "warns when an env file has a stale port"
+else
+  bad "should warn about a stale env-file port"
+fi
+printf 'APP_PORT=3000\n' > "$EPS_DIR/.env.local"
+out=$(run_eps_hook)
+[ -z "$out" ] && ok "stays quiet when the env port matches" || bad "should stay quiet when the env port matches"
+rm -rf "$EPS_DIR"
 
 # ---------------------------------------------------------------------------
 # 9. Behaviour: retry-counter.sh
@@ -607,7 +717,7 @@ RETRY_HOOK="$HOOKS_DIR/retry-counter.sh"
 # One invocation, shaped like a PostToolUseFailure payload.
 run_retry_hook() {
   # $1 session_id, $2 command, $3 stderr text
-  python3 - "$1" "$2" "$3" <<'PY' | bash "$RETRY_HOOK" 2>/dev/null
+  python3 - "$1" "$2" "$3" <<'PY' | CLAUDE_PLUGIN_DATA="$RETRY_DATA" bash "$RETRY_HOOK" 2>/dev/null
 import json, sys
 print(json.dumps({
     "session_id": sys.argv[1],
@@ -622,7 +732,9 @@ if [ ! -f "$RETRY_HOOK" ]; then
   bad "retry-counter.sh missing; skipping behaviour tests"
 else
   RETRY_SID="hook-tests-$$-$(date +%s)"
-  RETRY_TRACKER="/tmp/claude-retry-tracker-$RETRY_SID"
+  RETRY_DATA="$REPO_ROOT/tmp/retry-counter-tests-$$"
+  mkdir -p "$RETRY_DATA"
+  RETRY_TRACKER="$RETRY_DATA/retry-${RETRY_SID}.log"
   rm -f "$RETRY_TRACKER"
 
   RETRY_ERR="error: cannot find type 'Foo' in scope"
@@ -641,7 +753,7 @@ else
   r4=$(run_retry_hook "$RETRY_SID" 'swift build' "$RETRY_ERR")
   [ -z "$r4" ] && ok "resets after warning" || bad "should not warn again immediately" "$r4"
 
-  rm -f "$RETRY_TRACKER"
+  rm -rf "$RETRY_DATA"
 fi
 
 # ---------------------------------------------------------------------------
@@ -726,21 +838,13 @@ else
   expect_secrets_block_cmd "rm $SEC_DIR/.env.test.local"
   expect_secrets_block_cmd "rm $SEC_DIR/.env.schema.local"
 
-  # ~/.claude/hooks holds hook scripts, not secrets. The papercut, 2026-09-06:
-  # creating a hook named block-secret-file-reads.sh was blocked on its name.
-  # These paths are spelled from $HOME, not $HOOKS_DIR: the exemption is tied
-  # to the real hooks dir. No file is written; only the hook is asked.
-  expect_secrets_allow_cmd 'cat > ~/.claude/hooks/block-secret-file-reads.sh'
-  expect_secrets_allow_cmd "cat > $HOME/.claude/hooks/block-secret-file-reads.sh"
-  expect_secrets_allow_cmd 'cat > $HOME/.claude/hooks/block-secret-file-reads.sh'
-  expect_secrets_allow_cmd 'mv x ~/.claude/hooks/block-secret-file-reads.sh'
-  # A Write over an existing hook whose name matches `secret`.
-  run_secrets_write "$HOME/.claude/hooks/protect-secrets-files.sh"
-  [ $? -eq 0 ] && ok "allows Write over an existing ~/.claude/hooks/*secret*.sh" \
-                || bad "should allow Write over an existing ~/.claude/hooks/*secret*.sh"
-  run_secrets_write '~/.claude/hooks/protect-secrets-files.sh'
-  [ $? -eq 0 ] && ok "allows Write over it spelled with ~" \
-                || bad "should allow Write over ~/.claude/hooks/protect-secrets-files.sh"
+  # The installed hook directory holds scripts, including this guard's own
+  # secrets-like filename. The exemption follows the script location.
+  expect_secrets_allow_cmd "cat > $HOOKS_DIR/block-secret-file-reads.sh"
+  expect_secrets_allow_cmd "mv x $HOOKS_DIR/block-secret-file-reads.sh"
+  run_secrets_write "$HOOKS_DIR/protect-secrets-files.sh"
+  [ $? -eq 0 ] && ok "allows Write over this hook's own script directory" \
+                || bad "should allow Write over a script in this hook directory"
   # The exemption is by location, not by extension or by nearby directory.
   expect_secrets_block_cmd 'rm ~/dev/foo/secrets.sh'
   expect_secrets_block_cmd '> ~/dev/foo/.env'
@@ -1336,10 +1440,10 @@ fi
 #     `.` and space with `-` and is therefore ambiguous. The decoder is
 #     exercised against real directories whose names carry those characters.
 #
-#     The fixture project root lives under $HOME/.cache, NOT under the
-#     scratchpad: /tmp, /private/tmp, $TMPDIR and the scratchpad itself are
-#     always-allowed zones, so a fixture placed there would make every case
-#     pass for the wrong reason (it did, on the first draft of this section).
+#     The fixture project root lives under $HOME/.cache inside the repository's
+#     ignored tmp/ folder. It is not under the system temp directory or
+#     $TMPDIR, which are always-allowed zones, so these cases exercise the
+#     project boundary instead of passing for the wrong reason.
 # ---------------------------------------------------------------------------
 section "block-subagent-path-escape.sh behaviour"
 SPE_HOOK="$HOOKS_DIR/block-subagent-path-escape.sh"
@@ -1439,15 +1543,15 @@ else
   [ $? -eq 0 ] && ok "allows Write inside the scratchpad" || bad "should allow Write inside the scratchpad"
 
   # --- another session's scratch tree is NOT this session's scratch -----------
-  # /private/tmp/claude-$(id -u)/<encoded project>/<session>/ holds exactly one
-  # session's scratchpad, tasks and tool-results. Generic temp (/tmp,
-  # /private/tmp) stays allowed, but it must not re-include every other
-  # session's tree by prefix: this session may write its own session dir only.
-  SPE_C501=/private/tmp/claude-$(id -u)
+  # Each encoded project/session lives below the canonical system temp root.
+  # Generic temp stays allowed, but it must not re-include another session's
+  # scratch tree by prefix.
+  SPE_TMP_ROOT=$(python3 -c 'import os; print(os.path.realpath(os.environ.get("TMPDIR", "/tmp")))')
+  SPE_C501="$SPE_TMP_ROOT/claude-$(id -u)"
   SPE_OWN_ENC="$SPE_C501/$(spe_enc "$SPE_ROOT")"
   SPE_OWN_SESS="$SPE_OWN_ENC/6d1b9a70-own-session"
   SPE_OWN_SCRATCH="$SPE_OWN_SESS/scratchpad"
-  SPE_OTHER_ENC="$SPE_C501/-Users-alice-other-proj"
+  SPE_OTHER_ENC="$SPE_C501/-home-example-other-proj"
   SPE_OTHER_SCRATCH="$SPE_OTHER_ENC/1f0c2a44-other-session/scratchpad"
   mkdir -p "$SPE_OWN_SCRATCH" "$SPE_OWN_SESS/tasks" "$SPE_OTHER_SCRATCH"
 
@@ -1475,7 +1579,7 @@ else
 
   # --- the root also decodes from scratchpad_dir ------------------------------
   printf '{"agent_id":"agent-abc","cwd":%s,"scratchpad_dir":%s,"tool_name":"Write","tool_input":{"file_path":%s}}' \
-    "$(json1 "$SPE_ROOT")" "$(json1 "/private/tmp/claude-$(id -u)/$(spe_enc "$SPE_ROOT")/sess/scratchpad")" "$(json1 "$SPE_SIB/x.txt")" \
+    "$(json1 "$SPE_ROOT")" "$(json1 "$SPE_C501/$(spe_enc "$SPE_ROOT")/sess/scratchpad")" "$(json1 "$SPE_SIB/x.txt")" \
     | bash "$SPE_HOOK" >/dev/null 2>&1
   [ $? -eq 2 ] && ok "derives the root from scratchpad_dir when transcript_path is absent" \
     || bad "should derive the root from scratchpad_dir"
@@ -1556,7 +1660,7 @@ else
   expect_wie_quiet "perl -e 'print 1' lib/x.py"
   # Scratch copies and generated data are exactly what shell rewrites are for.
   expect_wie_quiet "sed -i '' 's/a/b/' /tmp/x.ts"
-  expect_wie_quiet "sed -i '' 's/a/b/' /private/tmp/x.ts"
+  expect_wie_quiet "sed -i '' 's/a/b/' /tmp/x.ts"
   expect_wie_quiet "sed -i '' 's/a/b/' data.csv"
   # A quoted mention is not an invocation.
   expect_wie_quiet 'echo "sed -i"'
@@ -1569,6 +1673,8 @@ HOOK="$HOOKS_DIR/block-shell-traps.sh"
 if [ ! -f "$HOOK" ]; then
   bad "block-shell-traps.sh missing; skipping behaviour tests"
 else
+  SHELL=/bin/zsh
+  export SHELL
   # Traps: each fails in the agent's zsh (or silently misleads) and must block.
   expect_block_cmd 'log show --last 5m --predicate "process == \"x\""'
   expect_block_cmd 'sudo log stream --level debug'
@@ -1580,18 +1686,28 @@ else
   else
     expect_block_cmd 'timeout 5 curl http://x'
   fi
-  expect_block_cmd 'strings MyApp | grep key'
-  expect_block_cmd 'ssh-add --apple-use-keychain ~/.ssh/id_ed25519'
-  expect_block_cmd 'sudo mdutil -E /'
+  if [ "$(uname -s)" = "Darwin" ]; then
+    expect_block_cmd 'strings MyApp | grep key'
+    expect_block_cmd 'ssh-add --apple-use-keychain ~/.ssh/id_ed25519'
+    expect_block_cmd 'sudo mdutil -E /'
+  else
+    expect_allow_cmd 'strings MyApp | grep key'
+    expect_allow_cmd 'ssh-add --apple-use-keychain ~/.ssh/id_ed25519'
+    expect_allow_cmd 'sudo mdutil -E /'
+  fi
   expect_block_cmd 'echo =====; ls'
   expect_block_cmd 'for status in a b; do echo $status; done'
   expect_block_cmd 'status=$(curl -s -o /dev/null -w "%{http_code}" x)'
   expect_block_cmd '[ "$a" == "b" ] && echo y'
   # Correct spellings and mentions in data must pass.
-  expect_allow_cmd '/usr/bin/log show --last 5m'
+  system_log=$(type -P log 2>/dev/null || true)
+  [ -n "$system_log" ] || system_log=./log
+  expect_allow_cmd "$system_log show --last 5m"
+  system_ssh_add=$(type -P ssh-add 2>/dev/null || true)
+  [ -n "$system_ssh_add" ] || system_ssh_add=./ssh-add
+  expect_allow_cmd "$system_ssh_add --apple-use-keychain ~/.ssh/id_ed25519"
   expect_allow_cmd 'git log --oneline -5'
   expect_allow_cmd 'strings -a MyApp | grep key'
-  expect_allow_cmd '/usr/bin/ssh-add --apple-use-keychain ~/.ssh/id_ed25519'
   expect_allow_cmd 'sudo mdutil -E /System/Volumes/Data'
   expect_allow_cmd "echo '====='"
   expect_allow_cmd '[[ "$a" == "b" ]] && echo y'

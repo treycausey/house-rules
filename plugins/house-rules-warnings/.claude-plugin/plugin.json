@@ -1,0 +1,12 @@
+{
+  "name": "house-rules-warnings",
+  "version": "0.1.0",
+  "description": "Add context when a command or edit needs review.",
+  "author": {
+    "name": "House Rules"
+  },
+  "homepage": "https://github.com/treycausey/house-rules",
+  "repository": "https://github.com/treycausey/house-rules",
+  "license": "MIT",
+  "keywords": ["hooks", "warnings", "advice", "review"]
+}
