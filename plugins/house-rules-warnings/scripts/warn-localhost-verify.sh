@@ -49,5 +49,5 @@ then
 fi
 
 jq -n --arg context "This probe checked only loopback. It does not show that another device or network can reach the service. Test from the client network position before making that claim." \
-  '{additionalContext:$context}'
+  '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $context}}'
 exit 0

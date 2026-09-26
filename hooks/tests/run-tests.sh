@@ -245,6 +245,75 @@ else
                 || bad "broad git add must not stage a changed .env"
   rm -rf "$BROAD_DIR" 2>/dev/null || bad "could not remove fixture dir $BROAD_DIR"
 
+  # A broad add's real footprint is scoped by its pathspec and by the current
+  # subdirectory; it must not be blocked by an unrelated sensitive change
+  # elsewhere in the repo, and it must still block when that scope really
+  # does cover the changed sensitive file.
+  PS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-pathspec-tests.XXXXXX")
+  git -C "$PS_DIR" init -q
+  mkdir -p "$PS_DIR/src"
+  printf 'SECRET=old\n' > "$PS_DIR/.env"
+  printf 'source\n' > "$PS_DIR/src/source.txt"
+  git -C "$PS_DIR" add -f .env src/source.txt
+  git -C "$PS_DIR" -c user.name=fixture -c user.email=fixture.invalid commit -qm initial
+  printf 'SECRET=new\n' > "$PS_DIR/.env"   # sensitive change lives at the repo root, outside src/
+
+  printf '{"cwd":%s,"tool_input":{"command":"git add -A src/"}}' \
+    "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$PS_DIR")" \
+    | bash "$GITADD_HOOK" 2>/dev/null
+  [ $? -eq 0 ] && ok "broad add scoped to src/ ignores an unrelated .env change" \
+                || bad "git add -A src/ must not be blocked by a change outside src/"
+
+  printf '{"cwd":%s,"tool_input":{"command":"git add -A"}}' \
+    "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$PS_DIR")" \
+    | bash "$GITADD_HOOK" 2>/dev/null
+  [ $? -eq 2 ] && ok "unscoped broad add still blocks on the same .env change" \
+                || bad "git add -A with no pathspec must still block on the changed .env"
+
+  printf '{"cwd":%s,"tool_input":{"command":"git add ."}}' \
+    "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$PS_DIR/src")" \
+    | bash "$GITADD_HOOK" 2>/dev/null
+  [ $? -eq 0 ] && ok "git add . from a subdirectory ignores a change outside it" \
+                || bad "git add . from src/ must not be blocked by the root .env change"
+
+  printf 'SECRET=new\n' > "$PS_DIR/src/.env"
+  git -C "$PS_DIR" add -f src/.env
+  git -C "$PS_DIR" -c user.name=fixture -c user.email=fixture.invalid commit -qm "track src/.env"
+  printf 'SECRET=newer\n' > "$PS_DIR/src/.env"
+  printf '{"cwd":%s,"tool_input":{"command":"git add ."}}' \
+    "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$PS_DIR/src")" \
+    | bash "$GITADD_HOOK" 2>/dev/null
+  [ $? -eq 2 ] && ok "git add . from src/ blocks on a change inside src/" \
+                || bad "git add . from src/ must block on a change inside src/"
+  rm -rf "$PS_DIR" 2>/dev/null || bad "could not remove fixture dir $PS_DIR"
+
+  # `git -C <dir> add ...` checks the NAMED repo, not the hook cwd's repo.
+  GC_HERE=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-c-here.XXXXXX")
+  GC_OTHER=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-c-other.XXXXXX")
+  git -C "$GC_HERE" init -q
+  git -C "$GC_OTHER" init -q
+  printf 'SECRET=old\n' > "$GC_OTHER/.env"
+  git -C "$GC_OTHER" add -f .env
+  git -C "$GC_OTHER" -c user.name=fixture -c user.email=fixture.invalid commit -qm initial
+  printf 'SECRET=new\n' > "$GC_OTHER/.env"
+
+  python3 -c '
+import json, sys
+cwd, other = sys.argv[1], sys.argv[2]
+print(json.dumps({"cwd": cwd, "tool_input": {"command": "git -C %s add -A" % other}}))
+' "$GC_HERE" "$GC_OTHER" | bash "$GITADD_HOOK" 2>/dev/null
+  [ $? -eq 2 ] && ok "git -C <other> checks the named repo's changed .env" \
+                || bad "git -C <other> add -A must block on the OTHER repo's changed .env"
+
+  python3 -c '
+import json, sys
+cwd, other = sys.argv[1], sys.argv[2]
+print(json.dumps({"cwd": cwd, "tool_input": {"command": "git -C %s add -A" % other}}))
+' "$GC_OTHER" "$GC_HERE" | bash "$GITADD_HOOK" 2>/dev/null
+  [ $? -eq 0 ] && ok "git -C <clean-repo> add -A ignores the hook cwd's own repo" \
+                || bad "git -C <clean-repo> add -A must not be blocked by the hook cwd's repo"
+  rm -rf "$GC_HERE" "$GC_OTHER" 2>/dev/null || bad "could not remove git -C fixture dirs"
+
   # Actual sensitive path operands, wherever the git add sits in the command.
   expect_gitadd_block 'git add .env'
   expect_gitadd_block 'git add path/to/.env.local'
@@ -631,8 +700,8 @@ run_wlv_hook() { printf '{"tool_input":{"command":%s}}' "$(python3 -c 'import js
 
 expect_wlv_warn() {
   out=$(run_wlv_hook "$1"); rc=$?
-  if [ $rc -eq 0 ] && echo "$out" | grep -q "additionalContext"; then ok "warns: $1"
-  else bad "should warn (exit 0 + additionalContext): $1" "exit $rc, out: $(echo "$out" | head -c 120)"; fi
+  if [ $rc -eq 0 ] && echo "$out" | jq -e '.hookSpecificOutput.hookEventName == "PostToolUse" and (.hookSpecificOutput.additionalContext | length > 0)' >/dev/null 2>&1; then ok "warns: $1"
+  else bad "should warn (exit 0 + documented PostToolUse shape): $1" "exit $rc, out: $(echo "$out" | head -c 120)"; fi
 }
 expect_wlv_quiet() {
   out=$(run_wlv_hook "$1"); rc=$?
@@ -692,7 +761,7 @@ printf 'export default { port: 3000 };\n' > "$EPS_DIR/next.config.js"
 printf 'APP_PORT=4242\n' > "$EPS_DIR/.env.local"
 run_eps_hook() { printf '{"tool_input":{"file_path":%s}}' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$EPS_DIR/next.config.js")" | bash "$EPS_HOOK" 2>/dev/null; }
 out=$(run_eps_hook)
-if echo "$out" | jq -e '.additionalContext | contains("4242")' >/dev/null; then
+if echo "$out" | jq -e '.hookSpecificOutput.hookEventName == "PostToolUse" and (.hookSpecificOutput.additionalContext | contains("4242"))' >/dev/null; then
   ok "warns when an env file has a stale port"
 else
   bad "should warn about a stale env-file port"
@@ -701,6 +770,60 @@ printf 'APP_PORT=3000\n' > "$EPS_DIR/.env.local"
 out=$(run_eps_hook)
 [ -z "$out" ] && ok "stays quiet when the env port matches" || bad "should stay quiet when the env port matches"
 rm -rf "$EPS_DIR"
+
+# ---------------------------------------------------------------------------
+# 8d. Behaviour: warn-long-file.sh, warn-field-mismatch.sh, xcodegen-stale-check.sh
+#     schema regression: all three are PostToolUse advisory hooks, and each
+#     used to print a top-level {"additionalContext": ...} that Claude Code
+#     never delivers -- the documented shape wraps it in hookSpecificOutput
+#     with the firing event's name.
+# ---------------------------------------------------------------------------
+section "advisory PostToolUse hooks: documented output shape"
+
+expect_pto_shape() {
+  # $1 hook path, $2 raw stdout from the hook
+  echo "$2" | jq -e '.hookSpecificOutput.hookEventName == "PostToolUse" and (.hookSpecificOutput.additionalContext | length > 0)' >/dev/null 2>&1 \
+    && ok "$(basename "$1"): documented PostToolUse shape" \
+    || bad "$(basename "$1"): must wrap advisory context in hookSpecificOutput.hookEventName=PostToolUse" "got: $(printf '%s' "$2" | head -c 200)"
+}
+
+WLF_HOOK="$HOOKS_DIR/warn-long-file.sh"
+if [ -f "$WLF_HOOK" ]; then
+  WLF_FILE=$(mktemp "$REPO_ROOT/tmp/warn-long-file.XXXXXX.ts")
+  python3 -c "print('x = 1\n' * 501, end='')" > "$WLF_FILE"
+  out=$(printf '{"tool_input":{"file_path":%s}}' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$WLF_FILE")" | bash "$WLF_HOOK" 2>/dev/null)
+  expect_pto_shape "$WLF_HOOK" "$out"
+  rm -f "$WLF_FILE"
+else
+  bad "warn-long-file.sh missing; skipping shape test"
+fi
+
+WFM_HOOK="$HOOKS_DIR/warn-field-mismatch.sh"
+if [ -f "$WFM_HOOK" ]; then
+  WFM_DIR=$(mktemp -d "$REPO_ROOT/tmp/warn-field-mismatch.XXXXXX")
+  git -C "$WFM_DIR" init -q
+  mkdir -p "$WFM_DIR/backend" "$WFM_DIR/frontend"
+  printf 'class Foo:\n    metadata_: str\n' > "$WFM_DIR/backend/schema.py"
+  printf 'const x = metadata;\n' > "$WFM_DIR/frontend/app.ts"
+  out=$(cd "$WFM_DIR" && printf '{"tool_input":{"file_path":%s}}' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$WFM_DIR/backend/schema.py")" | bash "$WFM_HOOK" 2>/dev/null)
+  expect_pto_shape "$WFM_HOOK" "$out"
+  rm -rf "$WFM_DIR"
+else
+  bad "warn-field-mismatch.sh missing; skipping shape test"
+fi
+
+XGS_HOOK="$HOOKS_DIR/xcodegen-stale-check.sh"
+if [ -f "$XGS_HOOK" ]; then
+  XGS_DIR=$(mktemp -d "$REPO_ROOT/tmp/xcodegen-stale-check.XXXXXX")
+  git -C "$XGS_DIR" init -q
+  printf 'name: App\n' > "$XGS_DIR/project.yml"
+  printf 'struct Foo {}\n' > "$XGS_DIR/Foo.swift"
+  out=$(printf '{"tool_input":{"file_path":%s}}' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$XGS_DIR/Foo.swift")" | bash "$XGS_HOOK" 2>/dev/null)
+  expect_pto_shape "$XGS_HOOK" "$out"
+  rm -rf "$XGS_DIR"
+else
+  bad "xcodegen-stale-check.sh missing; skipping shape test"
+fi
 
 # ---------------------------------------------------------------------------
 # 9. Behaviour: retry-counter.sh
@@ -744,7 +867,7 @@ else
 
   [ -z "$r1" ] && ok "quiet on the 1st failure" || bad "should stay quiet on the 1st failure" "$r1"
   [ -z "$r2" ] && ok "quiet on the 2nd failure" || bad "should stay quiet on the 2nd failure" "$r2"
-  if echo "$r3" | grep -q "additionalContext"; then
+  if echo "$r3" | jq -e '.hookSpecificOutput.hookEventName == "PostToolUseFailure" and (.hookSpecificOutput.additionalContext | length > 0)' >/dev/null 2>&1; then
     ok "warns on the 3rd failure with the same signature"
   else
     bad "3rd same-signature failure must warn" "got: $(echo "$r3" | head -c 160)"
@@ -884,6 +1007,11 @@ else
     ok "warns on app.py <-> app_old.py"
   else
     bad "must warn about app_old.py sibling" "got: $(printf '%s' "$out" | head -c 200)"
+  fi
+  if echo "$out" | jq -e '.hookSpecificOutput.hookEventName == "Stop" and (.hookSpecificOutput.additionalContext | length > 0)' >/dev/null 2>&1; then
+    ok "emits the documented Stop hookSpecificOutput shape"
+  else
+    bad "must wrap advisory context in hookSpecificOutput.hookEventName=Stop" "got: $(printf '%s' "$out" | head -c 200)"
   fi
   if echo "$out" | grep -q 'report.py'; then
     bad "must not flag unrelated sibling report.py"
@@ -1428,6 +1556,28 @@ git reset --hard"
   printf '{"tool_input":{"command":"git restore --staged .gitignore"}}' | PATH="$DGIT_NOPY:$PATH" bash "$DGIT_HOOK" 2>/dev/null
   [ $? -eq 0 ] && ok "allows a dotfile unstage with no python3 verdict" || bad "should allow a dotfile unstage with no python3 verdict"
   rm -rf "$DGIT_NOPY" 2>/dev/null || bad "could not remove fixture dir $DGIT_NOPY"
+
+  # --- raw_fallback whole-tree '.' followed by something other than space/EOL -
+  # The old regex only accepted whitespace or end of line after the tree
+  # operand, so a case arm's trailing ';', a case pattern's ')', a pipe into
+  # `bash -c`, and (when jq itself is missing and the fallback scans raw JSON)
+  # the JSON string's closing '"' all slipped through as false allows.
+  expect_dgit_block "case \$x in a) git checkout .;; esac"
+  expect_dgit_block 'cat f | bash -c "git restore ."'
+  expect_dgit_allow 'git checkout ./build'
+
+  DGIT_NOJQ=$(mktemp -d "${TMPDIR:-/tmp}/dgit-nojq.XXXXXX")
+  for tool in python3 grep tr cut cat sed mkdir rm; do
+    t=$(command -v "$tool" 2>/dev/null) && ln -sf "$t" "$DGIT_NOJQ/$tool"
+  done
+  run_dgit_nojq() { printf '%s' "$1" | PATH="$DGIT_NOJQ" "$BASH_BIN" "$DGIT_HOOK" 2>/dev/null; }
+  run_dgit_nojq '{"tool_input":{"command":"git checkout ."}}'
+  [ $? -eq 2 ] && ok "no-jq raw fallback blocks git checkout . ending in a JSON quote" \
+    || bad "no-jq raw fallback should block git checkout . ending in a JSON quote"
+  run_dgit_nojq '{"tool_input":{"command":"git status"}}'
+  [ $? -eq 0 ] && ok "no-jq raw fallback allows an unrelated command" \
+    || bad "no-jq raw fallback should allow an unrelated command"
+  rm -rf "$DGIT_NOJQ" 2>/dev/null || bad "could not remove fixture dir $DGIT_NOJQ"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1568,6 +1718,30 @@ else
   expect_sess_allow "rm -f $SPE_OWN_SCRATCH/x"
   expect_sess_allow "echo x > $SPE_OWN_SESS/tasks/out.txt"
   expect_sess_allow 'rm -f /tmp/x'
+
+  # --- generic temp root: both the logical and realpath spellings ------------
+  # macOS symlinks /tmp -> /private/tmp. A command spelled with the realpath
+  # form must be just as allowed as the logical form, or a subagent's ordinary
+  # `cp x /private/tmp/y` is blocked as out of scope.
+  if [ -d /private/tmp ] && [ "$(cd /private/tmp && pwd -P)" = "$(cd /tmp && pwd -P)" ]; then
+    expect_sess_allow 'rm -f /private/tmp/spe-private-tmp-generic-test'
+  else
+    printf '  skip /private/tmp is not the resolved form of /tmp on this host\n'
+  fi
+
+  # --- cross-session bypass via the OTHER spelling of the temp root ----------
+  # The per-session scratch-tree exclusion must match a scratch tree spelled
+  # either way, or the generic-temp allowance re-admits another session's
+  # scratchpad through the spelling the exclusion does not check.
+  if [ "/tmp" != "$SPE_TMP_ROOT" ]; then
+    SPE_OTHER2_ENC="/tmp/claude-$(id -u)/-home-example-other-proj2"
+    SPE_OTHER2_SCRATCH="$SPE_OTHER2_ENC/2a1b3c4d-other-session2/scratchpad"
+    mkdir -p "$SPE_OTHER2_SCRATCH"
+    expect_sess_block "rm -f $SPE_OTHER2_SCRATCH/x"
+    rm -rf "$SPE_OTHER2_ENC" 2>/dev/null || bad "could not remove fixture dir $SPE_OTHER2_ENC"
+  else
+    printf '  skip /tmp already resolves to the canonical spelling on this host\n'
+  fi
 
   printf '{"agent_id":"agent-abc","cwd":%s,"transcript_path":%s,"scratchpad_dir":%s,"tool_name":"Write","tool_input":{"file_path":%s}}' \
     "$(json1 "$SPE_ROOT")" "$(json1 "$SPE_TP")" "$(json1 "$SPE_OWN_SCRATCH")" "$(json1 "$SPE_OTHER_SCRATCH/notes.md")" \

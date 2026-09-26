@@ -106,9 +106,9 @@ if [ -n "$dupes" ]; then
 fi
 
 if [ -n "$reminders" ]; then
-  # Escape for JSON
-  json_reminders=$(printf '%b' "$reminders" | sed 's/"/\\"/g' | tr '\n' ' ')
-  echo "{\"additionalContext\": \"$json_reminders\"}"
+  json_reminders=$(printf '%b' "$reminders" | tr '\n' ' ')
+  jq -n --arg c "$json_reminders" \
+    '{hookSpecificOutput: {hookEventName: "Stop", additionalContext: $c}}'
 fi
 
 exit 0

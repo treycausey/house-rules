@@ -70,7 +70,7 @@ echo "$(date +%s)|${sig}" >> "$tracker"
 count=$(grep -cF "|${sig}" "$tracker" 2>/dev/null || echo 0)
 
 if [ "$count" -ge 3 ]; then
-  echo '{"additionalContext": "Three or more failures with a similar error pattern in the last 10 minutes. Stop retrying: state the failure mechanism in one falsifiable sentence, then check the docs, installed source, or --help before the next attempt."}'
+  echo '{"hookSpecificOutput": {"hookEventName": "PostToolUseFailure", "additionalContext": "Three or more failures with a similar error pattern in the last 10 minutes. Stop retrying: state the failure mechanism in one falsifiable sentence, then check the docs, installed source, or --help before the next attempt."}}'
   # Reset counter so the warning doesn't fire on every subsequent command.
   # `;` not `&&`: when EVERY line matches the signature -- the normal case
   # right after warning -- grep -v prints nothing and exits 1, so an `&& mv`

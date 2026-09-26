@@ -125,10 +125,32 @@ ALWAYS_ALLOWED_FILES = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"}
 # each claude-<uid> subdirectory belongs to one session. Those trees are not
 # covered by generic temp roots; only this session's scratchpad and session
 # directory are added as explicit roots.
+#
+# Both spellings of each temp root are tracked -- the literal path (e.g.
+# /tmp, or whatever $TMPDIR names) and its realpath (e.g. /private/tmp on
+# macOS, where /tmp is a symlink). A subagent command can name a temp path
+# either way, and the per-session exclusion must catch a scratch tree spelled
+# either way too, or one spelling falls through as a generic-temp bypass.
+def temp_root_spellings(root):
+    if not root:
+        return []
+    root = os.path.normpath(root)
+    out = [root]
+    try:
+        real = os.path.realpath(root)
+    except OSError:
+        real = root
+    if real != root:
+        out.append(real)
+    return out
+
+
 CLAUDE_TREE = "claude-%d" % os.getuid()
-TEMP_ROOTS = {os.path.realpath("/tmp")}
-if os.environ.get("TMPDIR"):
-    TEMP_ROOTS.add(os.path.realpath(os.environ["TMPDIR"]))
+TEMP_ROOTS = []
+for _root in ("/tmp", os.environ.get("TMPDIR")):
+    for _spelling in temp_root_spellings(_root):
+        if _spelling not in TEMP_ROOTS:
+            TEMP_ROOTS.append(_spelling)
 CLAUDE_SESSION_TREES = tuple(
     os.path.join(root.rstrip("/"), CLAUDE_TREE) + "/"
     for root in TEMP_ROOTS if root
@@ -280,8 +302,8 @@ def build_roots():
     add(project_root)
     add(scratchpad_dir)
     add(session_dir_root())
-    add("/tmp", generic=True)
-    add(os.environ.get("TMPDIR"), generic=True)
+    for _t in TEMP_ROOTS:
+        add(_t, generic=True)
     add(os.path.join(HOME, ".Trash"))
     for extra in read_scope_file():
         add(extra)

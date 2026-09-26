@@ -67,7 +67,7 @@ if warnings:
         + "\n".join(warnings)
         + "\nCheck these files and update if needed (they are gitignored so grep/search may miss them)."
     )
-    print(json.dumps({"additionalContext": message}))
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": message}}))
 PY
 
 exit $?

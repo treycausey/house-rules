@@ -56,8 +56,9 @@ for f in $fields; do
 done
 
 if [ -n "$warnings" ]; then
-  json_warnings=$(printf '%b' "$warnings" | sed 's/"/\\"/g' | tr '\n' ' ')
-  echo "{\"additionalContext\": \"CONTRACT CHECK: $json_warnings\"}"
+  json_warnings=$(printf '%b' "$warnings" | tr '\n' ' ')
+  jq -n --arg c "CONTRACT CHECK: $json_warnings" \
+    '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $c}}'
 fi
 
 exit 0

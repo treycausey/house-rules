@@ -85,13 +85,20 @@ def tokenize(segment):
 
 
 def git_add_paths(tokens):
-    """Return (path operands, broad add) for a `git add`, else None."""
+    """Return (path operands, broad add, git -C directories) for a `git add`,
+    else None. `-C` directories are collected in order; git applies each
+    relative to the previous one, chaining left to right."""
     if not tokens or tokens[0] != "git":
         return None
     i = 1
+    git_c_dirs = []
     # Skip git's own global options so `git -C dir add .env` is still seen.
     while i < len(tokens) and tokens[i].startswith("-"):
-        if tokens[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace"):
+        if tokens[i] == "-C":
+            if i + 1 < len(tokens):
+                git_c_dirs.append(tokens[i + 1])
+            i += 2
+        elif tokens[i] in ("-c", "--git-dir", "--work-tree", "--namespace"):
             i += 2
         else:
             i += 1
@@ -112,7 +119,17 @@ def git_add_paths(tokens):
         paths.append(t)
     if any(path in (".", "./") for path in paths):
         broad = True
-    return paths, broad
+    return paths, broad, git_c_dirs
+
+
+def resolve_git_c(base_cwd, git_c_dirs):
+    """The working directory `git -C <dir> [-C <dir2> ...]` actually runs in."""
+    cwd = base_cwd
+    for d in git_c_dirs:
+        if not d:
+            continue
+        cwd = d if os.path.isabs(d) else os.path.join(cwd or "", d)
+    return cwd
 
 
 def sensitive(path):
@@ -177,8 +194,16 @@ def auto_fix_ds_store(repo_cwd):
         return None
 
 
-def sensitive_changes(repo_cwd):
-    """Return sensitive paths a broad git add would stage in this repo."""
+def sensitive_changes(repo_cwd, pathspecs):
+    """Return sensitive paths a broad git add would stage in this repo.
+
+    With an explicit pathspec (an operand such as `src/`, or the bare `.` /
+    `./` that scopes a broad add to the current directory), the check is
+    scoped to it, run from repo_cwd so git resolves the pathspec exactly the
+    way the real `git add` would. With no pathspec (a bare `-A` / `-u`), `-A`
+    and `-u` genuinely operate on the whole working tree regardless of cwd,
+    so the check runs from the repo root instead.
+    """
     if not repo_cwd or not os.path.isdir(repo_cwd):
         return []
     try:
@@ -189,10 +214,14 @@ def sensitive_changes(repo_cwd):
         if top.returncode != 0:
             return []
         root = top.stdout.strip()
+        run_cwd = repo_cwd if pathspecs else root
+        cmd = ["git", "ls-files", "--modified", "--deleted", "--others",
+               "--exclude-standard", "-z"]
+        if pathspecs:
+            cmd.append("--")
+            cmd.extend(pathspecs)
         changed = subprocess.run(
-            ["git", "ls-files", "--modified", "--deleted", "--others",
-             "--exclude-standard", "-z"],
-            cwd=root, capture_output=True, text=True, timeout=10,
+            cmd, cwd=run_cwd, capture_output=True, text=True, timeout=10,
         )
         if changed.returncode != 0:
             return []
@@ -205,20 +234,26 @@ for segment in split_segments(cmd):
     result = git_add_paths(tokenize(segment))
     if result is None:
         continue
-    paths, broad = result
+    paths, broad, git_c_dirs = result
+    work_cwd = resolve_git_c(cwd, git_c_dirs)
+    # A pathspec operand (including the bare "." that scopes a broad add to
+    # the current directory) narrows a broad add's real footprint; a bare
+    # `-A` / `-u` with no operand does not, and is repo-wide.
+    pathspecs = paths
 
     # Broad add forms can stage a changed, already-tracked .env file even when
     # the command does not name it. Inspect the worktree before allowing them.
-    # If the event has no cwd, keep the hook pure and leave the verdict to git.
-    if broad and cwd:
-        for path in sensitive_changes(cwd):
+    # If the event has no cwd (and no git -C), keep the hook pure and leave
+    # the verdict to git.
+    if broad and work_cwd:
+        for path in sensitive_changes(work_cwd, pathspecs):
             message = (
                 "Blocked: refusing to stage secrets or temp files "
                 "(.env, .DS_Store, tmp/) through a broad git add. "
                 "Offending path: %s\n" % path
             )
             if os.path.basename(path) == ".DS_Store":
-                actions = auto_fix_ds_store(cwd)
+                actions = auto_fix_ds_store(work_cwd)
                 if actions:
                     message += "Auto-fixed: %s.\n" % "; ".join(actions)
             sys.stderr.write(message)
@@ -231,7 +266,7 @@ for segment in split_segments(cmd):
                 "(.env, .DS_Store, tmp/). Offending path: %s\n" % path
             )
             if os.path.basename(path).endswith(".DS_Store"):
-                actions = auto_fix_ds_store(cwd)
+                actions = auto_fix_ds_store(work_cwd)
                 if actions:
                     message += (
                         "Auto-fixed so this stops recurring: %s. "

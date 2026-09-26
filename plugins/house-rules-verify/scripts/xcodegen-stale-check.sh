@@ -16,7 +16,7 @@ case "$file" in *.swift) ;; *) exit 0 ;; esac
 repo=$(cd "$(dirname "$file")" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || exit 0
 
 if [ -f "$repo/project.yml" ]; then
-  echo '{"additionalContext":"Swift file changed in an XcodeGen project. If this file was newly created, deleted, or moved, run `xcodegen generate` before the next build. Do not diagnose `cannot find ... in scope` as a code bug until xcodegen has been re-run."}'
+  echo '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"Swift file changed in an XcodeGen project. If this file was newly created, deleted, or moved, run `xcodegen generate` before the next build. Do not diagnose `cannot find ... in scope` as a code bug until xcodegen has been re-run."}}'
 fi
 
 exit 0

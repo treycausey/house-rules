@@ -67,7 +67,14 @@ deny() {
 raw_fallback() {
   local text="$1"
   local pattern
-  pattern='git[[:space:]]+(push[[:space:]]+([^[:space:]]+[[:space:]]+)*(--force([^[:alnum:]_]|$)|-[[:alnum:]]*f[[:alnum:]]*([^[:alnum:]_-]|$))|reset[[:space:]]+--hard|checkout[[:space:]]+([^[:space:]]+[[:space:]]+)*(\.|\./|\.\.|\.\./)([[:space:]]|$)|restore[[:space:]]+([^[:space:]]+[[:space:]]+)*(\.|\./|\.\.|\.\./)([[:space:]]|$)|clean[[:space:]]+(--force|-[[:alpha:]]*f[[:alpha:]]*))'
+  # A whole-tree operand ('.', './', '..' or '../') is still destructive when
+  # it is followed by a shell metacharacter, a quote or a backtick instead of
+  # whitespace or end of line -- 'git checkout .;' 'git checkout .)' (a case
+  # arm) and 'git checkout ."' (a JSON string's closing quote, when this runs
+  # over raw undecoded JSON) all end the tree operand exactly where a space
+  # would.
+  tree_end='[[:space:]]|[;&|)"'\'\`']|$)'
+  pattern='git[[:space:]]+(push[[:space:]]+([^[:space:]]+[[:space:]]+)*(--force([^[:alnum:]_]|$)|-[[:alnum:]]*f[[:alnum:]]*([^[:alnum:]_-]|$))|reset[[:space:]]+--hard|checkout[[:space:]]+([^[:space:]]+[[:space:]]+)*(\.|\./|\.\.|\.\./)('"$tree_end"'|restore[[:space:]]+([^[:space:]]+[[:space:]]+)*(\.|\./|\.\.|\.\./)('"$tree_end"'|clean[[:space:]]+(--force|-[[:alpha:]]*f[[:alpha:]]*))'
   if printf '%s' "$text" | tr '\n' ' ' | grep -Eiq "$pattern"; then
     deny
   fi
