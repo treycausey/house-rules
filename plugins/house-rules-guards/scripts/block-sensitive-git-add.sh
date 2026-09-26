@@ -24,6 +24,7 @@ cwd=$(echo "$input" | jq -r '.cwd // empty')
 
 python3 - "$cmd" "$cwd" <<'PY'
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -75,13 +76,40 @@ def split_segments(text):
     return segments
 
 
+REDIRECT = re.compile(r"^[0-9]*(>>?|<<?|>&|<&|\|&)")
+
+
+def strip_redirects(tokens):
+    """Drop shell redirect operators and their targets.
+
+    `git add -A 2>/dev/null` tokenizes to ["git", "add", "-A", "2>/dev/null"]
+    -- without this, "2>/dev/null" reads as a pathspec operand, which
+    silently scopes the broad-add worktree check to that bogus path and
+    misses every real sensitive file. A bare operator with its target as a
+    separate token (`2> /dev/null`) drops both.
+    """
+    out = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        t = tokens[i]
+        m = REDIRECT.match(t)
+        if m:
+            i += 1 if m.group(0) != t else 2
+            continue
+        out.append(t)
+        i += 1
+    return out
+
+
 def tokenize(segment):
     try:
-        return shlex.split(segment)
+        tokens = shlex.split(segment)
     except ValueError:
         # Unbalanced quotes: fall back to a whitespace split rather than
         # letting a malformed command skip the check entirely.
-        return segment.split()
+        tokens = segment.split()
+    return strip_redirects(tokens)
 
 
 def git_add_paths(tokens):

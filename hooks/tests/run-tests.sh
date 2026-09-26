@@ -287,6 +287,26 @@ else
                 || bad "git add . from src/ must block on a change inside src/"
   rm -rf "$PS_DIR" 2>/dev/null || bad "could not remove fixture dir $PS_DIR"
 
+  # A shell redirect after a broad-add flag must not be read as a pathspec.
+  # `git add -A 2>/dev/null` tokenizes to ["git","add","-A","2>/dev/null"];
+  # without stripping it, "2>/dev/null" is treated as the pathspec that
+  # scopes the broad-add worktree check, which then greps a bogus path and
+  # misses every real sensitive file. Caught live by
+  # plugins/house-rules-guards/evals/stage-env when an agent ran exactly
+  # this form during a real `claude plugin eval` run (2026-09-26).
+  RD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-redirect-tests.XXXXXX")
+  git -C "$RD_DIR" init -q
+  printf 'SECRET=old\n' > "$RD_DIR/.env.local"
+  git -C "$RD_DIR" add -f .env.local
+  git -C "$RD_DIR" -c user.name=fixture -c user.email=fixture.invalid commit -qm initial
+  printf 'SECRET=new\n' > "$RD_DIR/.env.local"
+  printf '{"cwd":%s,"tool_input":{"command":"git add -A 2>/dev/null; git status --short 2>/dev/null"}}' \
+    "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$RD_DIR")" \
+    | bash "$GITADD_HOOK" 2>/dev/null
+  [ $? -eq 2 ] && ok "git add -A with a trailing shell redirect still blocks on the changed .env.local" \
+                || bad "git add -A 2>/dev/null must not let a redirect token defeat the broad-add scan"
+  rm -rf "$RD_DIR" 2>/dev/null || bad "could not remove fixture dir $RD_DIR"
+
   # `git -C <dir> add ...` checks the NAMED repo, not the hook cwd's repo.
   GC_HERE=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-c-here.XXXXXX")
   GC_OTHER=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-c-other.XXXXXX")
