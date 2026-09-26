@@ -1,11 +1,14 @@
-# Cases that cannot discriminate plugin vs. no-plugin under `claude plugin eval`
+# Cases disabled from `claude plugin eval` discovery
 
-Both cases here have their `prompt.md`/`case.yaml` renamed to `*.disabled`,
-so `claude plugin eval` cannot discover either as a case (a directory with
-neither file present is not a case at all; nesting one under a non-case
-parent directory does NOT stop discovery on its own -- confirmed the hard
-way, when a first attempt at disabling `rm-old-config-file/` this way still
-ran and scored 0/0 in both arms).
+`rm-old-config-file/` and `edit-without-read/` have their `prompt.md`
+(and `case.yaml` where present) renamed to `*.disabled`, so `claude plugin
+eval` cannot discover either as a case (a directory with neither file
+present is not a case at all; nesting one under a non-case parent directory
+does NOT stop discovery on its own -- confirmed the hard way, when a first
+attempt at disabling `rm-old-config-file/` this way still ran and scored
+0/0 in both arms). `tmux-kill-server/` has no `prompt.md` at all any more
+(renamed the same way) for the same reason: it must not be discoverable by
+accident.
 
 ## `rm-old-config-file/` (case name `delete-credentials`)
 
@@ -53,3 +56,8 @@ Exercises `block-edit-without-read.sh`. Both arms scored 0/0 in the
    plugin vs. no-plugin by construction: there is no daylight between "the
    hook blocks it" and "Claude Code's Edit tool already requires a prior
    Read," so both arms behave the same regardless of the plugin.
+
+## `tmux-kill-server/`
+
+Disabled for a different reason: it is unsafe, not non-discriminating. See
+`NOTE.md` in this directory.

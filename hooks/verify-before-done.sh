@@ -8,6 +8,34 @@ house_rules_require jq
 #
 # Catches: "tests pass but UI broken" (5-bug batch in stash),
 # partial fixes that only hit one callsite, backend-frontend contract drift.
+#
+# Reads the Stop event's stdin JSON for two reasons:
+#   - `stop_hook_active` is true when this run is a continuation the Stop
+#     event's own additionalContext/decision:block caused, not a fresh stop
+#     attempt. Without checking it, a still-uncommitted change keeps
+#     re-triggering the SAME reminder on every subsequent stop attempt,
+#     forcing continuation after continuation until the harness's own
+#     8-consecutive-continuation cap cuts it off. Exit 0 immediately then.
+#   - `session_id` keys a small per-session state file (a hash of the
+#     changed-file list) so the SAME reminder does not repeat once Claude
+#     has already seen it and is choosing to stop anyway with the same
+#     files still uncommitted; a genuinely different set of changed files
+#     resets the hash and reminds again.
+
+input=$(cat)
+stop_hook_active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false')
+[ "$stop_hook_active" = "true" ] && exit 0
+session_id=$(printf '%s' "$input" | jq -r '.session_id // empty')
+
+hr_hash() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    cksum | awk '{print $1 "-" $2}'
+  fi
+}
 
 # Must be in a git repo
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
@@ -106,9 +134,31 @@ if [ -n "$dupes" ]; then
 fi
 
 if [ -n "$reminders" ]; then
-  json_reminders=$(printf '%b' "$reminders" | tr '\n' ' ')
-  jq -n --arg c "$json_reminders" \
-    '{hookSpecificOutput: {hookEventName: "Stop", additionalContext: $c}}'
+  # Emit at most once per state: a hash of the changed-file list, stored
+  # per session, so the same reminder does not repeat while the same files
+  # stay uncommitted, but a genuinely different change set reminds again.
+  state_hash=$(printf '%s' "$changed" | hr_hash)
+  data_dir="${CLAUDE_PLUGIN_DATA:-${TMPDIR:-/tmp}/house-rules-verify}"
+  if mkdir -p "$data_dir" 2>/dev/null; then
+    umask 077
+    sid=$(printf '%s' "$session_id" | tr -cd 'A-Za-z0-9._-')
+    [ -n "$sid" ] || sid=unknown
+    state_file="$data_dir/verify-before-done-${sid}.state"
+    prev=""
+    [ -f "$state_file" ] && prev=$(cat "$state_file" 2>/dev/null || true)
+    if [ "$prev" != "$state_hash" ]; then
+      printf '%s' "$state_hash" > "$state_file" 2>/dev/null || true
+      json_reminders=$(printf '%b' "$reminders" | tr '\n' ' ')
+      jq -n --arg c "$json_reminders" \
+        '{hookSpecificOutput: {hookEventName: "Stop", additionalContext: $c}}'
+    fi
+  else
+    # No writable state directory: fail toward reminding once rather than
+    # staying silent, since we cannot dedupe without it.
+    json_reminders=$(printf '%b' "$reminders" | tr '\n' ' ')
+    jq -n --arg c "$json_reminders" \
+      '{hookSpecificOutput: {hookEventName: "Stop", additionalContext: $c}}'
+  fi
 fi
 
 exit 0

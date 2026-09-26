@@ -76,26 +76,41 @@ def split_segments(text):
     return segments
 
 
-REDIRECT = re.compile(r"^[0-9]*(>>?|<<?|>&|<&|\|&)")
+REDIRECT = re.compile(r"[0-9]*(?:>>?|<<?|>&|<&|\|&)")
 
 
 def strip_redirects(tokens):
-    """Drop shell redirect operators and their targets.
+    """Drop shell redirect operators and their targets, wherever in a token
+    they start.
 
     `git add -A 2>/dev/null` tokenizes to ["git", "add", "-A", "2>/dev/null"]
     -- without this, "2>/dev/null" reads as a pathspec operand, which
     silently scopes the broad-add worktree check to that bogus path and
-    misses every real sensitive file. A bare operator with its target as a
-    separate token (`2> /dev/null`) drops both.
+    misses every real sensitive file. `shlex.split` does not treat `<`/`>`
+    as word separators the way a real shell does, so a redirect glued
+    directly onto a flag with no space (`-A>/dev/null`, from
+    `git add -A>/dev/null`) survives as ONE token too -- this splits at the
+    first redirect character found anywhere in a token, not only at its
+    start, and keeps whatever real content came before it (`-A`). A bare
+    operator with its target as a separate token (`2> /dev/null`) drops
+    both.
     """
     out = []
     i = 0
     n = len(tokens)
     while i < n:
         t = tokens[i]
-        m = REDIRECT.match(t)
+        m = REDIRECT.search(t)
         if m:
-            i += 1 if m.group(0) != t else 2
+            prefix = t[:m.start()]
+            if prefix:
+                out.append(prefix)
+            if m.end() == len(t):
+                # The operator ran to the end of this token, so its target
+                # (if any) is the NEXT token, space-separated.
+                i += 2
+                continue
+            i += 1
             continue
         out.append(t)
         i += 1
@@ -141,13 +156,35 @@ def git_add_paths(tokens):
                 end_of_options = True
                 continue
             if t.startswith("-"):
-                if t in ("-A", "--all", "-u", "--update"):
+                if t in ("-A", "--all", "-u", "--update") or has_broad_short_flag(t):
                     broad = True
                 continue
         paths.append(t)
-    if any(path in (".", "./") for path in paths):
+    if any(path in (".", "./") or is_broad_pathspec(path) for path in paths):
         broad = True
     return paths, broad, git_c_dirs
+
+
+def has_broad_short_flag(t):
+    """A short-option cluster (never `--long`) bundling -A or -u with other
+    letters, e.g. `-Av` or `-vA` -- git reads either as a broad add, but an
+    exact match against "-A" alone would miss it."""
+    return t.startswith("-") and not t.startswith("--") and t != "-" and any(c in "Au" for c in t[1:])
+
+
+def is_broad_pathspec(p):
+    """A pathspec whose real scope is not "this literal relative path".
+
+    `:/` and `:(top)...` (or any other `:(...)` magic) match from the
+    repository root regardless of cwd; a pathspec containing a `..`
+    segment climbs above cwd. Either way the literal string cannot be
+    trusted to narrow the worktree check the way an ordinary relative path
+    does, so a git add carrying one is treated as broad and, in the
+    caller, is not used to scope the check at all.
+    """
+    if p.startswith(":/") or p.startswith(":("):
+        return True
+    return p == ".." or any(part == ".." for part in p.split("/"))
 
 
 def resolve_git_c(base_cwd, git_c_dirs):
@@ -266,8 +303,14 @@ for segment in split_segments(cmd):
     work_cwd = resolve_git_c(cwd, git_c_dirs)
     # A pathspec operand (including the bare "." that scopes a broad add to
     # the current directory) narrows a broad add's real footprint; a bare
-    # `-A` / `-u` with no operand does not, and is repo-wide.
-    pathspecs = paths
+    # `-A` / `-u` with no operand does not, and is repo-wide. A magic
+    # (`:/`, `:(...)`) or `..`-escaping pathspec is not trustworthy as a
+    # narrowing scope either way, so it forces the same repo-wide scan as
+    # no pathspec at all rather than being handed to git literally.
+    if any(is_broad_pathspec(p) for p in paths):
+        pathspecs = []
+    else:
+        pathspecs = paths
 
     # Broad add forms can stage a changed, already-tracked .env file even when
     # the command does not name it. Inspect the worktree before allowing them.

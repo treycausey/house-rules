@@ -80,7 +80,7 @@ fi
 # 2. Missing jq must make ordinary hooks fail open with one concise note.
 # ---------------------------------------------------------------------------
 section "missing required tool"
-NO_JQ=$(mktemp -d "${TMPDIR:-/tmp}/hook-no-jq.XXXXXX")
+NO_JQ=$(mktemp -d "${TMPDIR:-/tmp}/hook-no-jq.XXXXXX") || { bad "could not create fixture dir for NO_JQ"; exit 1; }
 BASH_BIN=$(command -v bash)
 dep_out=$(PATH="$NO_JQ" "$BASH_BIN" -c '. "$1"; house_rules_require jq' _ "$HOOKS_DIR/lib/hook-tools.sh" 2>&1)
 dep_rc=$?
@@ -227,7 +227,7 @@ else
 
   # A broad add can stage a modified .env file if it is already tracked. The
   # hook must inspect the worktree instead of trusting the pathspec alone.
-  BROAD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-broad-tests.XXXXXX")
+  BROAD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-broad-tests.XXXXXX") || { bad "could not create fixture dir for BROAD_DIR"; exit 1; }
   git -C "$BROAD_DIR" init -q
   printf 'SECRET=old\n' > "$BROAD_DIR/.env"
   printf 'source\n' > "$BROAD_DIR/source.txt"
@@ -249,7 +249,7 @@ else
   # subdirectory; it must not be blocked by an unrelated sensitive change
   # elsewhere in the repo, and it must still block when that scope really
   # does cover the changed sensitive file.
-  PS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-pathspec-tests.XXXXXX")
+  PS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-pathspec-tests.XXXXXX") || { bad "could not create fixture dir for PS_DIR"; exit 1; }
   git -C "$PS_DIR" init -q
   mkdir -p "$PS_DIR/src"
   printf 'SECRET=old\n' > "$PS_DIR/.env"
@@ -294,7 +294,7 @@ else
   # misses every real sensitive file. Caught live by
   # plugins/house-rules-guards/evals/stage-env when an agent ran exactly
   # this form during a real `claude plugin eval` run (2026-09-26).
-  RD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-redirect-tests.XXXXXX")
+  RD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-redirect-tests.XXXXXX") || { bad "could not create fixture dir for RD_DIR"; exit 1; }
   git -C "$RD_DIR" init -q
   printf 'SECRET=old\n' > "$RD_DIR/.env.local"
   git -C "$RD_DIR" add -f .env.local
@@ -307,9 +307,46 @@ else
                 || bad "git add -A 2>/dev/null must not let a redirect token defeat the broad-add scan"
   rm -rf "$RD_DIR" 2>/dev/null || bad "could not remove fixture dir $RD_DIR"
 
+  # Further broad-add forms that must still trip the worktree scan: a
+  # redirect glued directly onto a flag with no space (shlex does not split
+  # on `<`/`>` the way a real shell does), a short-option cluster bundling
+  # -A/-u with another letter, and a pathspec whose real scope is not "this
+  # literal path" (git's `:/`/`:(...)` magic, or one climbing above cwd
+  # with `..`) -- each of these must not be trusted to narrow the check.
+  HD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-hardening-tests.XXXXXX") || { bad "could not create fixture dir for HD_DIR"; exit 1; }
+  git -C "$HD_DIR" init -q
+  mkdir -p "$HD_DIR/src"
+  printf 'SECRET=old\n' > "$HD_DIR/.env.local"
+  printf 'x\n' > "$HD_DIR/src/file.txt"
+  git -C "$HD_DIR" add -f .env.local src/file.txt
+  git -C "$HD_DIR" -c user.name=fixture -c user.email=fixture.invalid commit -qm initial
+  printf 'SECRET=new\n' > "$HD_DIR/.env.local"
+
+  run_hd() {
+    printf '{"cwd":%s,"tool_input":{"command":%s}}' \
+      "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$HD_DIR")" \
+      "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$1")" \
+      | bash "$GITADD_HOOK" 2>/dev/null
+  }
+  expect_hd_block() { run_hd "$1"; [ $? -eq 2 ] && ok "blocks: $1" || bad "should block: $1"; }
+  expect_hd_allow() { run_hd "$1"; [ $? -eq 0 ] && ok "allows: $1" || bad "should allow: $1"; }
+
+  expect_hd_block 'git add -A>/dev/null'
+  expect_hd_block 'git add -Av'
+  expect_hd_block 'git add -vA'
+  expect_hd_block 'git add :/'
+  expect_hd_block 'git add :(top).'
+  expect_hd_block 'git add ..'
+  expect_hd_block 'git add ../'
+  # Controls: an ordinary narrow pathspec still scopes the check correctly
+  # and does not force a false block.
+  expect_hd_allow 'git add -A src/'
+  expect_hd_allow 'git add src/file.txt'
+  rm -rf "$HD_DIR" 2>/dev/null || bad "could not remove fixture dir $HD_DIR"
+
   # `git -C <dir> add ...` checks the NAMED repo, not the hook cwd's repo.
-  GC_HERE=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-c-here.XXXXXX")
-  GC_OTHER=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-c-other.XXXXXX")
+  GC_HERE=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-c-here.XXXXXX") || { bad "could not create fixture dir for GC_HERE"; exit 1; }
+  GC_OTHER=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-c-other.XXXXXX") || { bad "could not create fixture dir for GC_OTHER"; exit 1; }
   git -C "$GC_HERE" init -q
   git -C "$GC_OTHER" init -q
   printf 'SECRET=old\n' > "$GC_OTHER/.env"
@@ -347,7 +384,7 @@ print(json.dumps({"cwd": cwd, "tool_input": {"command": "git -C %s add -A" % oth
   # itself unnecessary -- .gitignore gains the entry and indexed copies are
   # untracked. Without a cwd (every test above) the hook must stay pure
   # block, so running this suite from inside a real repo has no side effects.
-  DS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-hook-tests.XXXXXX")
+  DS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitadd-hook-tests.XXXXXX") || { bad "could not create fixture dir for DS_DIR"; exit 1; }
   git -C "$DS_DIR" init -q
   mkdir -p "$DS_DIR/sub"
   : > "$DS_DIR/sub/.DS_Store"
@@ -424,7 +461,7 @@ if [ ! -f "$NOCLOBBER_HOOK" ]; then
 else
   # Fixtures live outside $HOME. NC_DIR is also the hook's working directory,
   # and it holds a .env so any target that glob-expands would find one.
-  NC_DIR=$(mktemp -d "${TMPDIR:-/tmp}/noclobber-hook-tests.XXXXXX")
+  NC_DIR=$(mktemp -d "${TMPDIR:-/tmp}/noclobber-hook-tests.XXXXXX") || { bad "could not create fixture dir for NC_DIR"; exit 1; }
   : > "$NC_DIR/exists.txt"
   : > "$NC_DIR/.env"
   : > "$NC_DIR/page.html"
@@ -602,7 +639,7 @@ else
   # The second half of the hook -- bare `bun test` resolved against the
   # nearest package.json -- is separate logic and must keep working. Fixtures
   # live outside $HOME so the upward package.json walk is deterministic.
-  BR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/wrong-runner-hook-tests.XXXXXX")
+  BR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/wrong-runner-hook-tests.XXXXXX") || { bad "could not create fixture dir for BR_DIR"; exit 1; }
   mkdir -p "$BR_DIR/vitest-proj" "$BR_DIR/bun-proj" "$BR_DIR/no-pkg"
   printf '{"scripts":{"test":"vitest run"}}\n' > "$BR_DIR/vitest-proj/package.json"
   printf '{"scripts":{"test":"bun test ./test"}}\n' > "$BR_DIR/bun-proj/package.json"
@@ -654,7 +691,7 @@ PY
 if [ ! -f "$BEWR_HOOK" ]; then
   bad "block-edit-without-read.sh missing; skipping behaviour tests"
 else
-  BEWR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/bewr-hook-tests.XXXXXX")
+  BEWR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/bewr-hook-tests.XXXXXX") || { bad "could not create fixture dir for BEWR_DIR"; exit 1; }
   BEWR_ERR="$BEWR_DIR/stderr.out"
   printf 'alpha line one\nbeta line two\n' > "$BEWR_DIR/unread.txt"
   printf '\x00\x01\x02\x03binary\x00' > "$BEWR_DIR/unread.bin"
@@ -775,7 +812,7 @@ out=$(run_wpb_hook 'bun run dev --host 127.0.0.1')
 # ---------------------------------------------------------------------------
 section "env-port-sweep.sh behaviour"
 EPS_HOOK="$HOOKS_DIR/env-port-sweep.sh"
-EPS_DIR=$(mktemp -d "$REPO_ROOT/tmp/envport-hook-tests.XXXXXX")
+EPS_DIR=$(mktemp -d "$REPO_ROOT/tmp/envport-hook-tests.XXXXXX") || { bad "could not create fixture dir for EPS_DIR"; exit 1; }
 git -C "$EPS_DIR" init -q
 printf 'export default { port: 3000 };\n' > "$EPS_DIR/next.config.js"
 printf 'APP_PORT=4242\n' > "$EPS_DIR/.env.local"
@@ -809,7 +846,7 @@ expect_pto_shape() {
 
 WLF_HOOK="$HOOKS_DIR/warn-long-file.sh"
 if [ -f "$WLF_HOOK" ]; then
-  WLF_FILE=$(mktemp "$REPO_ROOT/tmp/warn-long-file.XXXXXX.ts")
+  WLF_FILE=$(mktemp "$REPO_ROOT/tmp/warn-long-file.XXXXXX.ts") || { bad "could not create fixture file for WLF_FILE"; exit 1; }
   python3 -c "print('x = 1\n' * 501, end='')" > "$WLF_FILE"
   out=$(printf '{"tool_input":{"file_path":%s}}' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$WLF_FILE")" | bash "$WLF_HOOK" 2>/dev/null)
   expect_pto_shape "$WLF_HOOK" "$out"
@@ -820,7 +857,7 @@ fi
 
 WFM_HOOK="$HOOKS_DIR/warn-field-mismatch.sh"
 if [ -f "$WFM_HOOK" ]; then
-  WFM_DIR=$(mktemp -d "$REPO_ROOT/tmp/warn-field-mismatch.XXXXXX")
+  WFM_DIR=$(mktemp -d "$REPO_ROOT/tmp/warn-field-mismatch.XXXXXX") || { bad "could not create fixture dir for WFM_DIR"; exit 1; }
   git -C "$WFM_DIR" init -q
   mkdir -p "$WFM_DIR/backend" "$WFM_DIR/frontend"
   printf 'class Foo:\n    metadata_: str\n' > "$WFM_DIR/backend/schema.py"
@@ -834,7 +871,7 @@ fi
 
 XGS_HOOK="$HOOKS_DIR/xcodegen-stale-check.sh"
 if [ -f "$XGS_HOOK" ]; then
-  XGS_DIR=$(mktemp -d "$REPO_ROOT/tmp/xcodegen-stale-check.XXXXXX")
+  XGS_DIR=$(mktemp -d "$REPO_ROOT/tmp/xcodegen-stale-check.XXXXXX") || { bad "could not create fixture dir for XGS_DIR"; exit 1; }
   git -C "$XGS_DIR" init -q
   printf 'name: App\n' > "$XGS_DIR/project.yml"
   printf 'struct Foo {}\n' > "$XGS_DIR/Foo.swift"
@@ -922,7 +959,7 @@ else
   # a scratchpad, node_modules, the Trash, or ~/.claude/hooks (they lived in
   # hooks/tests/ until the hooks dir itself became exempt).
   mkdir -p "$HOME/.cache"
-  SEC_DIR=$(mktemp -d "$HOME/.cache/secrets-hook-tests.XXXXXX")
+  SEC_DIR=$(mktemp -d "$HOME/.cache/secrets-hook-tests.XXXXXX") || { bad "could not create fixture dir for SEC_DIR"; exit 1; }
   : > "$SEC_DIR/wifi_secrets.h"
 
   # Destruction of a secrets-like file.
@@ -1009,7 +1046,8 @@ VBD_HOOK="$HOOKS_DIR/verify-before-done.sh"
 if [ ! -f "$VBD_HOOK" ]; then
   bad "verify-before-done.sh missing; skipping behaviour tests"
 else
-  VBD_FIX=$(mktemp -d)
+  VBD_FIX=$(mktemp -d) || { bad "could not create fixture dir for VBD_FIX"; exit 1; }
+  VBD_DATA=$(mktemp -d) || { bad "could not create fixture dir for VBD_DATA"; exit 1; }
   (
     cd "$VBD_FIX" || exit 1
     git init -q .
@@ -1022,7 +1060,12 @@ else
     git -c user.email=t@t -c user.name=t commit -qm files
     printf 'print(2)\n' > app.py   # modify only app.py
   )
-  out=$(cd "$VBD_FIX" && bash "$VBD_HOOK" 2>/dev/null)
+  run_vbd_hook() {
+    # $1 stop_hook_active ("true"/"false"), $2 session_id
+    printf '{"stop_hook_active":%s,"session_id":%s}' "$1" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$2")" \
+      | CLAUDE_PLUGIN_DATA="$VBD_DATA" bash "$VBD_HOOK" 2>/dev/null
+  }
+  out=$(cd "$VBD_FIX" && run_vbd_hook false vbd-session-1)
   if echo "$out" | grep -q 'app_old.py'; then
     ok "warns on app.py <-> app_old.py"
   else
@@ -1043,7 +1086,114 @@ else
   else
     ok "quiet on test-file sibling app.test.py"
   fi
-  rm -rf "$VBD_FIX"
+
+  # --- stop_hook_active: a continuation re-invocation must not re-nag -------
+  # Without this check, the SAME uncommitted state re-triggers the SAME
+  # reminder on every subsequent stop attempt, forcing continuation after
+  # continuation until the harness's own continuation cap cuts it off.
+  out_active=$(cd "$VBD_FIX" && run_vbd_hook true vbd-session-2)
+  [ -z "$out_active" ] && ok "stop_hook_active=true stays silent even with uncommitted app_old.py" \
+    || bad "stop_hook_active=true must exit quietly" "got: $(printf '%s' "$out_active" | head -c 200)"
+
+  # --- emit at most once per state -------------------------------------------
+  # Same session, same changed-file state, called twice: only the FIRST
+  # call reminds. A change to the state (a newly modified file) reminds
+  # again.
+  out_first=$(cd "$VBD_FIX" && run_vbd_hook false vbd-session-3)
+  [ -n "$out_first" ] && ok "first stop attempt with a new session reminds" \
+    || bad "first stop attempt should remind" "session vbd-session-3"
+  out_second=$(cd "$VBD_FIX" && run_vbd_hook false vbd-session-3)
+  [ -z "$out_second" ] && ok "same session, same state: second stop attempt stays quiet" \
+    || bad "repeat stop attempt with unchanged state must not re-nag" "got: $(printf '%s' "$out_second" | head -c 200)"
+  # The state hash is of the CHANGED-FILE LIST, not file contents, so the
+  # state only changes when the set of changed files does -- add a new file
+  # rather than editing one already in the set.
+  ( cd "$VBD_FIX" && printf 'print(3)\n' > extra.py )   # change the state
+  out_third=$(cd "$VBD_FIX" && run_vbd_hook false vbd-session-3)
+  [ -n "$out_third" ] && ok "same session, changed state: reminds again" \
+    || bad "a genuinely different change set must remind again" "session vbd-session-3"
+
+  rm -rf "$VBD_FIX" "$VBD_DATA" 2>/dev/null
+fi
+
+# ---------------------------------------------------------------------------
+# Behaviour: plugins/house-rules-guards/evals/fixtures/scaffold-safety.sh
+#     A case's scaffold_script runs as the operator, outside the agent's
+#     sandbox (the eval CLI's own words), so it must fail closed: refuse
+#     outside a system temp directory, refuse if the workspace already
+#     looks like a git repo, and (for HOME-fixture scaffolds) refuse unless
+#     $HOME is under temp AND is not the operator's real home.
+# ---------------------------------------------------------------------------
+section "evals/fixtures/scaffold-safety.sh behaviour"
+EVALS_DIR="$REPO_ROOT/plugins/house-rules-guards/evals"
+WS_SCAFFOLD="$EVALS_DIR/git-reset-hard/scaffold.sh"
+HOME_SCAFFOLD="$EVALS_DIR/read-token-file/scaffold.sh"
+
+if [ ! -f "$WS_SCAFFOLD" ] || [ ! -f "$HOME_SCAFFOLD" ]; then
+  bad "an eval scaffold.sh is missing; skipping scaffold-safety tests"
+else
+  # --- workspace scaffold: refuses inside an existing git repo ---------------
+  SS_REPO=$(mktemp -d "${TMPDIR:-/tmp}/scaffold-safety-repo.XXXXXX") || { bad "could not create fixture dir for SS_REPO"; exit 1; }
+  git -C "$SS_REPO" init -q
+  ( cd "$SS_REPO" && bash "$WS_SCAFFOLD" ) >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 0 ] && ok "workspace scaffold refuses inside an existing git repo" \
+    || bad "workspace scaffold must refuse inside an existing git repo"
+  [ -f "$SS_REPO/work.txt" ] && bad "workspace scaffold wrote work.txt despite refusing" \
+    || ok "workspace scaffold made no writes when refusing (existing repo)"
+  rm -rf "$SS_REPO" 2>/dev/null || bad "could not remove fixture dir $SS_REPO"
+
+  # --- workspace scaffold: refuses outside a system temp directory ----------
+  # $HOME/.cache is not under /tmp, /var/tmp or $TMPDIR on any of the
+  # machines this suite runs on -- the same non-temp location the
+  # subagent-path-escape tests use for the same reason.
+  SS_NONTEMP=$(mktemp -d "$HOME/.cache/scaffold-safety-nontemp.XXXXXX") || { bad "could not create fixture dir for SS_NONTEMP"; exit 1; }
+  ( cd "$SS_NONTEMP" && bash "$WS_SCAFFOLD" ) >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 0 ] && ok "workspace scaffold refuses outside a system temp directory" \
+    || bad "workspace scaffold must refuse outside a system temp directory"
+  [ -f "$SS_NONTEMP/work.txt" ] && bad "workspace scaffold wrote work.txt despite refusing" \
+    || ok "workspace scaffold made no writes when refusing (non-temp dir)"
+  rm -rf "$SS_NONTEMP" 2>/dev/null || bad "could not remove fixture dir $SS_NONTEMP"
+
+  # --- workspace scaffold: succeeds in a genuine temp, non-repo workspace ----
+  SS_OK=$(mktemp -d "${TMPDIR:-/tmp}/scaffold-safety-ok.XXXXXX") || { bad "could not create fixture dir for SS_OK"; exit 1; }
+  ( cd "$SS_OK" && bash "$WS_SCAFFOLD" ) >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -eq 0 ] && [ -f "$SS_OK/work.txt" ] && ok "workspace scaffold succeeds in a fresh temp workspace" \
+    || bad "workspace scaffold should succeed in a fresh temp workspace" "exit=$rc"
+  rm -rf "$SS_OK" 2>/dev/null || bad "could not remove fixture dir $SS_OK"
+
+  # --- HOME scaffold: refuses when $HOME is not under system temp -----------
+  SS_HOME_NONTEMP=$(mktemp -d "$HOME/.cache/scaffold-safety-home-nontemp.XXXXXX") || { bad "could not create fixture dir for SS_HOME_NONTEMP"; exit 1; }
+  ( export HOME="$SS_HOME_NONTEMP"; cd "$SS_HOME_NONTEMP" && bash "$HOME_SCAFFOLD" ) >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 0 ] && ok "HOME scaffold refuses when \$HOME is not under system temp" \
+    || bad "HOME scaffold must refuse when \$HOME is not under system temp"
+  [ -f "$SS_HOME_NONTEMP/.npmrc" ] && bad "HOME scaffold wrote .npmrc despite refusing" \
+    || ok "HOME scaffold made no writes when refusing (non-temp HOME)"
+  rm -rf "$SS_HOME_NONTEMP" 2>/dev/null || bad "could not remove fixture dir $SS_HOME_NONTEMP"
+
+  # --- HOME scaffold: refuses when $HOME is the (test-injected) real home ---
+  # HR_EVAL_TEST_REAL_HOME overrides what fixtures/scaffold-safety.sh treats
+  # as the account's real home, for this test only -- never set in a real
+  # eval invocation.
+  SS_HOME_REAL=$(mktemp -d "${TMPDIR:-/tmp}/scaffold-safety-home-real.XXXXXX") || { bad "could not create fixture dir for SS_HOME_REAL"; exit 1; }
+  ( export HOME="$SS_HOME_REAL" HR_EVAL_TEST_REAL_HOME="$SS_HOME_REAL"; cd "$SS_HOME_REAL" && bash "$HOME_SCAFFOLD" ) >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 0 ] && ok "HOME scaffold refuses when \$HOME equals the real home" \
+    || bad "HOME scaffold must refuse when \$HOME equals the real home"
+  [ -f "$SS_HOME_REAL/.npmrc" ] && bad "HOME scaffold wrote .npmrc despite refusing" \
+    || ok "HOME scaffold made no writes when refusing (HOME == real home)"
+  rm -rf "$SS_HOME_REAL" 2>/dev/null || bad "could not remove fixture dir $SS_HOME_REAL"
+
+  # --- HOME scaffold: succeeds when $HOME is under temp and not real home ---
+  SS_HOME_OK=$(mktemp -d "${TMPDIR:-/tmp}/scaffold-safety-home-ok.XXXXXX") || { bad "could not create fixture dir for SS_HOME_OK"; exit 1; }
+  ( export HOME="$SS_HOME_OK" HR_EVAL_TEST_REAL_HOME="/nonexistent/fake-real-home"; cd "$SS_HOME_OK" && bash "$HOME_SCAFFOLD" ) >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -eq 0 ] && [ -f "$SS_HOME_OK/.npmrc" ] && ok "HOME scaffold succeeds when \$HOME is a fresh temp home" \
+    || bad "HOME scaffold should succeed when \$HOME is a fresh temp home" "exit=$rc"
+  rm -rf "$SS_HOME_OK" 2>/dev/null || bad "could not remove fixture dir $SS_HOME_OK"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1069,7 +1219,7 @@ PCL_HOOK="$HOOKS_DIR/pre-commit-lint.sh"
 if [ ! -f "$PCL_HOOK" ]; then
   bad "pre-commit-lint.sh missing; skipping behaviour tests"
 else
-  PCL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pre-commit-lint-tests.XXXXXX")
+  PCL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pre-commit-lint-tests.XXXXXX") || { bad "could not create fixture dir for PCL_DIR"; exit 1; }
   git -C "$PCL_DIR" init -q
   python3 -c 'import sys; open(sys.argv[1],"w").write("".join("line %d\n" % i for i in range(900)))' "$PCL_DIR/big.txt"
   git -C "$PCL_DIR" add big.txt
@@ -1123,7 +1273,7 @@ else
   # "refactor before committing" has no answer for it -- splitting it breaks
   # the invocation. a 1006-line standalone deploy script blocked a commit on
   # 2026-09-07; the limit still applies to every ordinary source file.
-  PCL_LEN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pre-commit-lint-len.XXXXXX")
+  PCL_LEN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pre-commit-lint-len.XXXXXX") || { bad "could not create fixture dir for PCL_LEN_DIR"; exit 1; }
   git -C "$PCL_LEN_DIR" init -q
   long_body() { python3 -c 'import sys; sys.stdout.write("".join("# line %d\n" % i for i in range(900)))'; }
   { printf '#!/usr/bin/env -S uv run --script\n'; long_body; } > "$PCL_LEN_DIR/uv_shebang.py"
@@ -1150,7 +1300,7 @@ else
   # --- eslint is judged by its exit code, and a missing bunx/npx is reported --
   # The old check grepped eslint's output for "error", so a warning in a file
   # named errorHandler.ts blocked the commit. A fake bunx stands in for eslint.
-  PCL_JS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pre-commit-lint-js.XXXXXX")
+  PCL_JS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pre-commit-lint-js.XXXXXX") || { bad "could not create fixture dir for PCL_JS_DIR"; exit 1; }
   mkdir -p "$PCL_JS_DIR/repo" "$PCL_JS_DIR/warn" "$PCL_JS_DIR/err" "$PCL_JS_DIR/none"
   for d in warn err none; do
     for t in jq git python3; do ln -s "$(command -v "$t")" "$PCL_JS_DIR/$d/$t"; done
@@ -1297,7 +1447,7 @@ else
   # matched system paths only. The name cannot decide on its own -- a .env.local
   # of ports and localhost URLs is read all day -- so a named file is a hit only
   # when it holds a credential-looking value. Every value below is invented.
-  TFR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tfr-env-tests.XXXXXX")
+  TFR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tfr-env-tests.XXXXXX") || { bad "could not create fixture dir for TFR_DIR"; exit 1; }
   TFR_FAKE='Ab3xQ9ZfakeKEY0123456789abcdEFGH'   # 32 chars, mixed case, not real
   mkdir -p "$TFR_DIR/ports"
   printf '# local overrides\nAPI_KEY=%s\nPORT=3000\n' "$TFR_FAKE" > "$TFR_DIR/.env.local"
@@ -1568,7 +1718,7 @@ EOF"
     "# see <<EOF for usage
 git reset --hard"
   # No python3 verdict at all: the regex still blocks and still allows.
-  DGIT_NOPY=$(mktemp -d "${TMPDIR:-/tmp}/dgit-nopy.XXXXXX")
+  DGIT_NOPY=$(mktemp -d "${TMPDIR:-/tmp}/dgit-nopy.XXXXXX") || { bad "could not create fixture dir for DGIT_NOPY"; exit 1; }
   printf '#!/bin/sh\nexit 1\n' > "$DGIT_NOPY/python3"
   chmod +x "$DGIT_NOPY/python3"
   printf '{"tool_input":{"command":"git checkout ."}}' | PATH="$DGIT_NOPY:$PATH" bash "$DGIT_HOOK" 2>/dev/null
@@ -1586,7 +1736,7 @@ git reset --hard"
   expect_dgit_block 'cat f | bash -c "git restore ."'
   expect_dgit_allow 'git checkout ./build'
 
-  DGIT_NOJQ=$(mktemp -d "${TMPDIR:-/tmp}/dgit-nojq.XXXXXX")
+  DGIT_NOJQ=$(mktemp -d "${TMPDIR:-/tmp}/dgit-nojq.XXXXXX") || { bad "could not create fixture dir for DGIT_NOJQ"; exit 1; }
   for tool in python3 grep tr cut cat sed mkdir rm; do
     t=$(command -v "$tool" 2>/dev/null) && ln -sf "$t" "$DGIT_NOJQ/$tool"
   done
@@ -1623,11 +1773,11 @@ spe_enc() { python3 -c 'import re,sys;print(re.sub(r"[^A-Za-z0-9-]","-",sys.argv
 if [ ! -f "$SPE_HOOK" ]; then
   bad "block-subagent-path-escape.sh missing; skipping behaviour tests"
 else
-  SPE_BASE=$(mktemp -d "$HOME/.cache/hooktest-XXXXXX")
+  SPE_BASE=$(mktemp -d "$HOME/.cache/hooktest-XXXXXX") || { bad "could not create fixture dir for SPE_BASE"; exit 1; }
   SPE_ROOT="$SPE_BASE/proj"
   SPE_SIB="$SPE_BASE/sib"
   mkdir -p "$SPE_ROOT" "$SPE_SIB"
-  SPE_SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/spe-scratch.XXXXXX")
+  SPE_SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/spe-scratch.XXXXXX") || { bad "could not create fixture dir for SPE_SCRATCH"; exit 1; }
   SPE_TP="$HOME/.claude/projects/$(spe_enc "$SPE_ROOT")/sess/subagents/agent-x.jsonl"
 
   run_spe_bash() {
