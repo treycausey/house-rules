@@ -10,7 +10,7 @@ Format: **incident → rule → what enforces it.** "Hook" means a script in
 test, script, or step a human or agent runs. "Rule only" means nothing enforces
 it yet, which is the weakest state a rule can be in.
 
-The incidents come from one person's estate of about 40 repos, run mostly by
+The incidents come from one person's platform of about 40 repos, run mostly by
 coding agents, in mid-2026. Project names, host names, and exact dates are
 removed.
 

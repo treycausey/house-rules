@@ -110,9 +110,9 @@ Start a new Claude Code session so it loads the hooks and rules.
 
 ### Hooks you may want to remove
 
-Some hooks encode one estate's choices rather than general safety:
+Some hooks encode one platform's choices rather than general safety:
 
-- `block-wrong-runner.sh` blocks `npm`, `yarn`, and `pnpm`, because this estate
+- `block-wrong-runner.sh` blocks `npm`, `yarn`, and `pnpm`, because this platform
   is Bun-only.
 - `xcodegen-stale-check.sh` matters only for XcodeGen iOS projects.
 - `prettier-on-edit.sh` runs only in projects that already use Prettier.
@@ -151,7 +151,7 @@ Read these before you install anything.
   the agent when neither is installed.
 - **`standing` is experimental and not included as code.** See
   [`experimental/standing/`](experimental/standing/).
-- **One estate's evidence.** The incidents come from one person's repos over a
+- **One platform's evidence.** The incidents come from one person's repos over a
   few months. They are real, but they are not a survey.
 
 ## Roadmap

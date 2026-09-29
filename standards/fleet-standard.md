@@ -1,9 +1,9 @@
 # Fleet operations standard
 
-Every repo in the estate gets four things: an end-to-end smoke test, a real
+Every repo in the platform gets four things: an end-to-end smoke test, a real
 health check, a one-command deploy, and an accurate "Operate" section in its
 README. This document is the contract. It was piloted on one server repo and
-then applied to the rest of an estate of about 30 live repos the same way.
+then applied to the rest of a platform of about 30 live repos the same way.
 
 The point is uniformity for agents. An agent dropped into any repo can run
 `smoke`, read `/health`, run `deploy --dry-run`, and find "Operate" in the
@@ -104,7 +104,7 @@ it came back healthy.
   the live service. This is how an agent verifies the script without an
   unwanted restart. **Reject any other flag with a nonzero exit.** A typo like
   `--dryrun` must not fall through to a live restart.
-- Use one restart mechanism across the estate (for launchd:
+- Use one restart mechanism across the platform (for launchd:
   `launchctl kickstart -k gui/$(id -u)/<label>`).
 - Poll health for about 15 seconds after the restart. Exit non-zero with the
   last health response if it never comes up.
@@ -144,7 +144,7 @@ them:
   read `StandardOutPath` / `StandardErrorPath` from the plist
   (`plutil -p <plist>`); do not guess a `log show` predicate.
 - **Data:** where persistent data lives.
-- **Roll back:** the actual command sequence (for most small estates:
+- **Roll back:** the actual command sequence (for most small platforms:
   `git revert` and redeploy).
 
 Run every command in this section before writing it down.
@@ -159,7 +159,7 @@ Run every command in this section before writing it down.
 - `deploy --dry-run` exits 0 and prints the steps it would take.
 - The README has an "Operate" section with all eight labels, and every command
   in it ran in this session.
-- The repo's ship config (*example, adapt:* this estate uses a
+- The repo's ship config (*example, adapt:* this platform uses a
   `.claude/ship.json` file read by its own ship command, with a `check` field) calls the real health endpoint, or is confirmed unnecessary for a
   library or static repo.
 

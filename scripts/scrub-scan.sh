@@ -3,7 +3,7 @@
 #
 #   bash scripts/scrub-scan.sh
 # SCRUB_PRIVATE_PATTERNS can name a private pattern file. By default, the
-# scanner reads ~/.config/agent-estate-kit/private-patterns.txt when present.
+# scanner reads ~/.config/agent-platform-kit/private-patterns.txt when present.
 #
 # SCRUB_PRIVATE_PATTERNS names a file OUTSIDE the repo with one extended regex
 # per line: your host names, tailnet id, username, project and device names.
@@ -16,8 +16,8 @@ cd "$(dirname "$0")/.." || exit 1
 g() { /usr/bin/grep -rnIE --exclude=.git --exclude-dir=node_modules --exclude-dir=.git "$@" . ; }
 
 PRIVATE_PATTERNS=${SCRUB_PRIVATE_PATTERNS:-}
-if [ -z "$PRIVATE_PATTERNS" ] && [ -f "${HOME:-}/.config/agent-estate-kit/private-patterns.txt" ]; then
-  PRIVATE_PATTERNS="${HOME}/.config/agent-estate-kit/private-patterns.txt"
+if [ -z "$PRIVATE_PATTERNS" ] && [ -f "${HOME:-}/.config/agent-platform-kit/private-patterns.txt" ]; then
+  PRIVATE_PATTERNS="${HOME}/.config/agent-platform-kit/private-patterns.txt"
 fi
 
 echo "## 1. email addresses"

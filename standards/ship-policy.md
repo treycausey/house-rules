@@ -33,7 +33,7 @@ In order:
 2. Deploy or restart the declared services (see
    [`fleet-standard.md`](fleet-standard.md): `deploy` runs the checks again and
    verifies the new process by `pid` and `startedAt`).
-3. Install device apps through the estate's install path, and hand the owner
+3. Install device apps through the platform's install path, and hand the owner
    the install link.
 4. Close the issues the change resolves.
 5. **Verify the target directly**, then tell the owner what shipped. Do not ask

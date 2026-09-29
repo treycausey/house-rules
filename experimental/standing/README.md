@@ -2,7 +2,7 @@
 
 **Status: not included as code.** This directory describes the design of
 `standing`, a runner for unattended agents. The code exists in the author's
-private estate but is one day old and has not yet run long enough to prove it
+private platform but is one day old and has not yet run long enough to prove it
 works. It will be added here once it has. Only its decision queue,
 [`decide`](../../tools/decide/), is included now, because it runs standalone
 and has its own tests.
