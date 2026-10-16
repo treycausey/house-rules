@@ -5,7 +5,7 @@ a decision instead of stopping, guessing, or pinging. The owner reads one
 digest and answers each item once.
 
 It is an append-only JSONL log, one per machine, at
-`$DECIDE_HOME/decisions.jsonl` (default `~/.standing/decisions.jsonl`). Writes
+`$DECIDE_HOME/decisions.jsonl` (default `~/.decide/decisions.jsonl`). Writes
 take an `mkdir` lock, so concurrent agents on one machine append safely. Reads
 fold the whole log; records are never edited in place.
 

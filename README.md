@@ -53,7 +53,6 @@ in sync. `hooks/tests/run-tests.sh` checks that sync.
 | [`standards/fleet-standard.md`](standards/fleet-standard.md) | What every repo must have so any agent can operate it: a hermetic smoke test, a health check that checks real dependencies, a one-command deploy that verifies the new process, and an "Operate" README section. |
 | [`standards/ship-policy.md`](standards/ship-policy.md) | The four gates under which an agent ships without asking again, and when it must stop and ask. |
 | [`tools/decide/`](tools/decide/) | A decision-queue CLI (Bun). Agents file questions for the owner instead of stopping or guessing; repeats of the same problem fold into one item. |
-| [`experimental/standing/`](experimental/standing/) | Design notes for a runner of scheduled, bounded-authority agents. Design only; the code is not released yet. |
 
 ## Five-minute install
 
@@ -149,26 +148,18 @@ Read these before you install anything.
 - **JS/TS checks need `bunx` or `npx`.** `pre-commit-lint.sh` (eslint, tsc) and
   `prettier-on-edit.sh` use `bunx`, fall back to `npx --no-install`, and tell
   the agent when neither is installed.
-- **`standing` is experimental and not included as code.** See
-  [`experimental/standing/`](experimental/standing/).
 - **One estate's evidence.** The incidents come from one person's repos over a
   few months. They are real, but they are not a survey.
 
 ## Roadmap
 
-Week 2 is about proving `standing`, the scheduled-agent runner, before its code
-goes in:
-
-- Run at least three standing agents on a schedule for a week, on more than one
-  machine, and publish the run history (success, quiet, failed) with the
-  failure reasons.
 - Make host names, credential paths, alert channels, and heartbeat targets
   configuration, with no personal defaults, and test a fresh install from this
   repo on a clean machine account.
-- Show one full propose loop: an agent files a decision with a branch, the owner
-  resolves it, and the branch ships through the ship-policy gates.
-- Show one failure loop: a broken credential, a filed and folded failure
-  decision, an alert, and recovery.
+
+`standing`, the scheduled-agent runner this kit once planned to include, was
+retired in October 2026 and will not be released. The hooks, standards, ship
+gates and `decide` do not depend on it.
 
 ## License
 

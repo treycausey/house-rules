@@ -10,7 +10,7 @@ let originalHome: string | undefined;
 
 beforeEach(() => {
   originalHome = process.env.HOME;
-  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "standing-decide-"));
+  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "decide-test-"));
   process.env.HOME = tmpHome;
   delete process.env.DECIDE_HOME;
 });

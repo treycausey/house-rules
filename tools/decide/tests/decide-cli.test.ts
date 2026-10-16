@@ -11,13 +11,13 @@ let home: string;
 
 function decide(...args: string[]) {
   return spawnSync("bun", [BIN, ...args], {
-    env: { ...process.env, HOME: home, DECIDE_HOME: path.join(home, ".standing") },
+    env: { ...process.env, HOME: home, DECIDE_HOME: path.join(home, ".decide") },
     encoding: "utf8",
   });
 }
 
 function lastResolution(): string | undefined {
-  const lines = fs.readFileSync(path.join(home, ".standing", "decisions.jsonl"), "utf8").trim().split("\n");
+  const lines = fs.readFileSync(path.join(home, ".decide", "decisions.jsonl"), "utf8").trim().split("\n");
   const ev = lines.map((l) => JSON.parse(l)).filter((e) => e.type === "resolve").at(-1);
   return ev?.resolution;
 }
@@ -52,7 +52,7 @@ describe("decide resolve", () => {
     const id = addOne();
     const out = decide("resolve", id, "--note");
     expect(out.status).toBe(2);
-    expect(fs.readFileSync(path.join(home, ".standing", "decisions.jsonl"), "utf8")).not.toContain('"resolve"');
+    expect(fs.readFileSync(path.join(home, ".decide", "decisions.jsonl"), "utf8")).not.toContain('"resolve"');
   });
 });
 

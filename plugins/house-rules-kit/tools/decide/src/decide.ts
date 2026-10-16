@@ -1,5 +1,5 @@
 // Decision queue: append-only JSONL at $DECIDE_HOME/decisions.jsonl (default
-// ~/.standing/decisions.jsonl), one queue per machine (do not sync it). Two concurrent writers on the same
+// ~/.decide/decisions.jsonl), one queue per machine (do not sync it). Two concurrent writers on the same
 // machine never corrupt each other because writes are single `appendFileSync`
 // calls guarded by an mkdir lock,
 // and reads fold the whole log rather than mutating records in place.
@@ -8,14 +8,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 
-// Where the queue lives. DECIDE_HOME wins; otherwise ~/.standing, the same
-// directory the (experimental) standing runner uses.
+// Where the queue lives. DECIDE_HOME wins; otherwise ~/.decide.
 export function decideHome(): string {
   if (process.env.DECIDE_HOME) return process.env.DECIDE_HOME;
   // No silent fallback: a queue written to /tmp would look filed and then be
   // lost on reboot, and no other process would ever read it.
   if (!process.env.HOME) throw new Error("decide: neither DECIDE_HOME nor HOME is set; set one of them");
-  return path.join(process.env.HOME, ".standing");
+  return path.join(process.env.HOME, ".decide");
 }
 
 export type DecisionEventType = "add" | "resolve" | "seen";

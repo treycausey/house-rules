@@ -21,4 +21,4 @@ bun "${CLAUDE_PLUGIN_ROOT}/tools/decide/bin/decide.ts" add \
 
 Use `--option` more than once and `--recommend` when there are clear choices.
 The queue is local to the machine. It uses `DECIDE_HOME` when set, otherwise
-`~/.standing/decisions.jsonl`; do not sync that file between machines.
+`~/.decide/decisions.jsonl`; do not sync that file between machines.
