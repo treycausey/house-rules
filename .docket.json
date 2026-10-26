@@ -1,0 +1,7 @@
+{
+  "setup": ["cd tools/decide && bun install --frozen-lockfile"],
+  "checks": [
+    "bash hooks/tests/run-tests.sh",
+    "cd tools/decide && bun run test"
+  ]
+}
