@@ -20,6 +20,21 @@ afterEach(() => {
   fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 
+describe("standing is retired", () => {
+  it("defaults the queue to ~/.decide, not ~/.standing", () => {
+    addDecision({ project: "p", agent: "a", title: "t", recommend: "r" });
+    expect(fs.existsSync(path.join(tmpHome, ".decide", "decisions.jsonl"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpHome, ".standing"))).toBe(false);
+  });
+
+  it("the decide skill does not point at ~/.standing", () => {
+    const skill = path.join(import.meta.dirname, "../../../plugins/house-rules-kit/skills/decide/SKILL.md");
+    const text = fs.readFileSync(skill, "utf8");
+    expect(text).not.toContain(".standing");
+    expect(text).toContain("~/.decide/decisions.jsonl");
+  });
+});
+
 describe("decision queue fold", () => {
   it("add then list shows an open decision", () => {
     const id = addDecision({ project: "shots", agent: "shots.inbox", title: "ship it?", recommend: "yes" });
